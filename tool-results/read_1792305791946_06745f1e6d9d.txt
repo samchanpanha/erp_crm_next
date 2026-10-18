@@ -1,0 +1,648 @@
+     1→     1→'use client'
+     2→     2→
+     3→     3→import { useMemo, useState } from 'react'
+     4→     4→import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+     5→     5→import {
+     6→     6→  Eye, Loader2, Pencil, Plus, Search, Target, Trash2, Trophy, XCircle,
+     7→     7→} from 'lucide-react'
+     8→     8→import { Button } from '@/components/ui/button'
+     9→     9→import { Input } from '@/components/ui/input'
+    10→    10→import { Label } from '@/components/ui/label'
+    11→    11→import { Textarea } from '@/components/ui/textarea'
+    12→    12→import { Skeleton } from '@/components/ui/skeleton'
+    13→    13→import { Card, CardContent } from '@/components/ui/card'
+    14→    14→import { Progress } from '@/components/ui/progress'
+    15→    15→import {
+    16→    16→  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    17→    17→} from '@/components/ui/dialog'
+    18→    18→import {
+    19→    19→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    20→    20→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    21→    21→} from '@/components/ui/alert-dialog'
+    22→    22→import {
+    23→    23→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    24→    24→} from '@/components/ui/select'
+    25→    25→import {
+    26→    26→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    27→    27→} from '@/components/ui/table'
+    28→    28→import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
+    29→    29→import { DocStatusBadge } from '@/components/erp/shared/status-badge'
+    30→    30→import { formatMoney, formatDate, relativeDays, toDateInput } from '@/components/erp/shared/format'
+    31→    31→import { formatMoneyCompact } from '@/components/erp/shared/stat-card'
+    32→    32→import { get, post, put, del } from '@/components/erp/lib/api'
+    33→    33→import { useToast } from '@/hooks/use-toast'
+    34→    34→import { cn } from '@/lib/utils'
+    35→    35→
+    36→    36→// ---------------------------------------------------------------------------
+    37→    37→// Types (mirror API payloads)
+    38→    38→// ---------------------------------------------------------------------------
+    39→    39→type OpportunityStage = 'NEW' | 'QUALIFIED' | 'PROPOSAL' | 'NEGOTIATION' | 'WON' | 'LOST'
+    40→    40→
+    41→    41→interface OpportunityRow {
+    42→    42→  id: string
+    43→    43→  title: string
+    44→    44→  stage: OpportunityStage
+    45→    45→  amount: number
+    46→    46→  probability: number
+    47→    47→  expectedCloseDate: string | null
+    48→    48→  notes: string | null
+    49→    49→  createdAt: string
+    50→    50→  updatedAt: string
+    51→    51→  thirdParty: { id: string; name: string; code: string }
+    52→    52→}
+    53→    53→
+    54→    54→interface ThirdPartyOption {
+    55→    55→  id: string
+    56→    56→  name: string
+    57→    57→  code: string
+    58→    58→}
+    59→    59→
+    60→    60→const STAGES: OpportunityStage[] = ['NEW', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON', 'LOST']
+    61→    61→
+    62→    62→const STAGE_LABEL: Record<OpportunityStage, string> = {
+    63→    63→  NEW: 'New',
+    64→    64→  QUALIFIED: 'Qualified',
+    65→    65→  PROPOSAL: 'Proposal sent',
+    66→    66→  NEGOTIATION: 'Negotiation',
+    67→    67→  WON: 'Won',
+    68→    68→  LOST: 'Lost',
+    69→    69→}
+    70→    70→
+    71→    71→const emptyOppForm = {
+    72→    72→  title: '',
+    73→    73→  thirdPartyId: '',
+    74→    74→  stage: 'NEW' as OpportunityStage,
+    75→    75→  amount: '',
+    76→    76→  probability: '10',
+    77→    77→  expectedCloseDate: '',
+    78→    78→  notes: '',
+    79→    79→}
+    80→    80→
+    81→    81→type OppFormState = typeof emptyOppForm
+    82→    82→
+    83→    83→// ---------------------------------------------------------------------------
+    84→    84→// Module
+    85→    85→// ---------------------------------------------------------------------------
+    86→    86→export default function OpportunitiesModule() {
+    87→    87→  const { toast } = useToast()
+    88→    88→  const queryClient = useQueryClient()
+    89→    89→
+    90→    90→  const [search, setSearch] = useState('')
+    91→    91→  const [stageFilter, setStageFilter] = useState<string>('ALL')
+    92→    92→  const [formOpen, setFormOpen] = useState(false)
+    93→    93→  const [editing, setEditing] = useState<OpportunityRow | null>(null)
+    94→    94→  const [form, setForm] = useState<OppFormState>(emptyOppForm)
+    95→    95→  const [deleteTarget, setDeleteTarget] = useState<OpportunityRow | null>(null)
+    96→    96→
+    97→    97→  const listQuery = useQuery({
+    98→    98→    queryKey: ['opportunities'],
+    99→    99→    queryFn: () => get<OpportunityRow[]>('/api/opportunities'),
+   100→   100→  })
+   101→   101→
+   102→   102→  // Shared cache with the Third Parties module ('third-parties' query key)
+   103→   103→  const thirdPartiesQuery = useQuery({
+   104→   104→    queryKey: ['third-parties'],
+   105→   105→    queryFn: () => get<ThirdPartyOption[]>('/api/third-parties'),
+   106→   106→  })
+   107→   107→
+   108→   108→  const data = listQuery.data ?? []
+   109→   109→
+   110→   110→  const filtered = useMemo(() => {
+   111→   111→    const q = search.trim().toLowerCase()
+   112→   112→    return data.filter((o) => {
+   113→   113→      if (stageFilter !== 'ALL' && o.stage !== stageFilter) return false
+   114→   114→      if (!q) return true
+   115→   115→      return [o.title, o.thirdParty.name, o.thirdParty.code].some((v) =>
+   116→   116→        v.toLowerCase().includes(q),
+   117→   117→      )
+   118→   118→    })
+   119→   119→  }, [data, search, stageFilter])
+   120→   120→
+   121→   121→  const stageSummaries = useMemo(
+   122→   122→    () =>
+   123→   123→      STAGES.map((stage) => {
+   124→   124→        const items = data.filter((o) => o.stage === stage)
+   125→   125→        return {
+   126→   126→          stage,
+   127→   127→          count: items.length,
+   128→   128→          total: items.reduce((s, o) => s + o.amount, 0),
+   129→   129→        }
+   130→   130→      }),
+   131→   131→    [data],
+   132→   132→  )
+   133→   133→
+   134→   134→  const weightedPipeline = useMemo(
+   135→   135→    () =>
+   136→   136→      data
+   137→   137→        .filter((o) => o.stage !== 'WON' && o.stage !== 'LOST')
+   138→   138→        .reduce((s, o) => s + (o.amount * o.probability) / 100, 0),
+   139→   139→    [data],
+   140→   140→  )
+   141→   141→
+   142→   142→  const sortedThirdParties = useMemo(
+   143→   143→    () => [...(thirdPartiesQuery.data ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+   144→   144→    [thirdPartiesQuery.data],
+   145→   145→  )
+   146→   146→
+   147→   147→  const invalidate = () => {
+   148→   148→    void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+   149→   149→  }
+   150→   150→
+   151→   151→  // ---- mutations ----------------------------------------------------------
+   152→   152→  const saveMutation = useMutation({
+   153→   153→    mutationFn: async () => {
+   154→   154→      const amount = Number(form.amount === '' ? 0 : form.amount)
+   155→   155→      const probability = Math.max(0, Math.min(100, Number(form.probability === '' ? 10 : form.probability)))
+   156→   156→      const payload = {
+   157→   157→        title: form.title.trim(),
+   158→   158→        thirdPartyId: form.thirdPartyId,
+   159→   159→        stage: form.stage,
+   160→   160→        amount: Number.isFinite(amount) ? amount : 0,
+   161→   161→        probability: Number.isFinite(probability) ? Math.round(probability) : 10,
+   162→   162→        expectedCloseDate: form.expectedCloseDate,
+   163→   163→        notes: form.notes,
+   164→   164→      }
+   165→   165→      if (editing) return put(`/api/opportunities/${editing.id}`, payload)
+   166→   166→      return post('/api/opportunities', payload)
+   167→   167→    },
+   168→   168→    onSuccess: () => {
+   169→   169→      toast({
+   170→   170→        title: editing ? 'Opportunity updated' : 'Opportunity created',
+   171→   171→        description: form.title.trim(),
+   172→   172→      })
+   173→   173→      invalidate()
+   174→   174→      setFormOpen(false)
+   175→   175→      setEditing(null)
+   176→   176→    },
+   177→   177→    onError: (err: Error) =>
+   178→   178→      toast({ title: 'Save failed', description: err.message, variant: 'destructive' }),
+   179→   179→  })
+   180→   180→
+   181→   181→  const quickStageMutation = useMutation({
+   182→   182→    mutationFn: ({ id, stage }: { id: string; stage: 'WON' | 'LOST' }) =>
+   183→   183→      put(`/api/opportunities/${id}`, {
+   184→   184→        stage,
+   185→   185→        probability: stage === 'WON' ? 100 : 0,
+   186→   186→      }),
+   187→   187→    onSuccess: (_res, vars) => {
+   188→   188→      toast({
+   189→   189→        title: vars.stage === 'WON' ? 'Opportunity won' : 'Opportunity marked as lost',
+   190→   190→        description: 'The pipeline summary has been refreshed.',
+   191→   191→      })
+   192→   192→      invalidate()
+   193→   193→    },
+   194→   194→    onError: (err: Error) =>
+   195→   195→      toast({ title: 'Update failed', description: err.message, variant: 'destructive' }),
+   196→   196→  })
+   197→   197→
+   198→   198→  const deleteMutation = useMutation({
+   199→   199→    mutationFn: (id: string) => del(`/api/opportunities/${id}`),
+   200→   200→    onSuccess: () => {
+   201→   201→      toast({ title: 'Opportunity deleted' })
+   202→   202→      invalidate()
+   203→   203→    },
+   204→   204→    onError: (err: Error) =>
+   205→   205→      toast({ title: 'Could not delete', description: err.message, variant: 'destructive' }),
+   206→   206→  })
+   207→   207→
+   208→   208→  // ---- dialog helpers -----------------------------------------------------
+   209→   209→  const openCreate = () => {
+   210→   210→    setEditing(null)
+   211→   211→    setForm(emptyOppForm)
+   212→   212→    setFormOpen(true)
+   213→   213→  }
+   214→   214→
+   215→   215→  const openEdit = (o: OpportunityRow) => {
+   216→   216→    setEditing(o)
+   217→   217→    setForm({
+   218→   218→      title: o.title,
+   219→   219→      thirdPartyId: o.thirdParty.id,
+   220→   220→      stage: o.stage,
+   221→   221→      amount: String(o.amount),
+   222→   222→      probability: String(o.probability),
+   223→   223→      expectedCloseDate: toDateInput(o.expectedCloseDate),
+   224→   224→      notes: o.notes ?? '',
+   225→   225→    })
+   226→   226→    setFormOpen(true)
+   227→   227→  }
+   228→   228→
+   229→   229→  const canSave =
+   230→   230→    form.title.trim().length > 0 && form.thirdPartyId !== '' && !saveMutation.isPending
+   231→   231→
+   232→   232→  return (
+   233→   233→    <div className="space-y-5">
+   234→   234→      <PageHeader
+   235→   235→        icon={Target}
+   236→   236→        title="Opportunities"
+   237→   237→        description="Track your sales pipeline from first contact to close"
+   238→   238→        actions={
+   239→   239→          <Button onClick={openCreate} className="min-h-11 sm:min-h-9">
+   240→   240→            <Plus className="h-4 w-4" aria-hidden />
+   241→   241→            New opportunity
+   242→   242→          </Button>
+   243→   243→        }
+   244→   244→      />
+   245→   245→
+   246→   246→      {/* Pipeline summary */}
+   247→   247→      {listQuery.isPending ? (
+   248→   248→        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+   249→   249→          {Array.from({ length: 7 }).map((_, i) => (
+   250→   250→            <Skeleton key={i} className="h-20 rounded-lg" />
+   251→   251→          ))}
+   252→   252→        </div>
+   253→   253→      ) : (
+   254→   254→        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+   255→   255→          {stageSummaries.map((s) => {
+   256→   256→            const active = stageFilter === s.stage
+   257→   257→            return (
+   258→   258→              <button
+   259→   259→                key={s.stage}
+   260→   260→                type="button"
+   261→   261→                onClick={() => setStageFilter(active ? 'ALL' : s.stage)}
+   262→   262→                aria-pressed={active}
+   263→   263→                aria-label={`Filter by stage ${STAGE_LABEL[s.stage]}`}
+   264→   264→                className={cn(
+   265→   265→                  'rounded-lg border bg-card p-3 text-left shadow-xs transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+   266→   266→                  active && 'border-primary ring-1 ring-primary',
+   267→   267→                )}
+   268→   268→              >
+   269→   269→                <p className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+   270→   270→                  {STAGE_LABEL[s.stage]}
+   271→   271→                </p>
+   272→   272→                <p className="mt-1 text-xl font-bold tabular-nums">{s.count}</p>
+   273→   273→                <p className="truncate text-xs text-muted-foreground">{formatMoneyCompact(s.total)}</p>
+   274→   274→              </button>
+   275→   275→            )
+   276→   276→          })}
+   277→   277→          <div className="rounded-lg border border-primary bg-primary/5 p-3 shadow-xs">
+   278→   278→            <p className="truncate text-[11px] font-semibold uppercase tracking-wide text-primary">
+   279→   279→              Weighted pipeline
+   280→   280→            </p>
+   281→   281→            <p className="mt-1 text-xl font-bold tabular-nums text-primary">
+   282→   282→              {formatMoneyCompact(weightedPipeline)}
+   283→   283→            </p>
+   284→   284→            <p className="truncate text-xs text-muted-foreground">amount × probability</p>
+   285→   285→          </div>
+   286→   286→        </div>
+   287→   287→      )}
+   288→   288→
+   289→   289→      {/* Toolbar */}
+   290→   290→      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+   291→   291→        <div className="relative w-full sm:w-72">
+   292→   292→          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+   293→   293→          <Input
+   294→   294→            value={search}
+   295→   295→            onChange={(e) => setSearch(e.target.value)}
+   296→   296→            placeholder="Search title or third party…"
+   297→   297→            className="pl-8"
+   298→   298→            aria-label="Search opportunities"
+   299→   299→          />
+   300→   300→        </div>
+   301→   301→        <Select value={stageFilter} onValueChange={setStageFilter}>
+   302→   302→          <SelectTrigger className="w-full sm:w-48" aria-label="Filter by stage">
+   303→   303→            <SelectValue placeholder="Stage" />
+   304→   304→          </SelectTrigger>
+   305→   305→          <SelectContent>
+   306→   306→            <SelectItem value="ALL">All stages</SelectItem>
+   307→   307→            {STAGES.map((s) => (
+   308→   308→              <SelectItem key={s} value={s}>
+   309→   309→                {STAGE_LABEL[s]}
+   310→   310→              </SelectItem>
+   311→   311→            ))}
+   312→   312→          </SelectContent>
+   313→   313→        </Select>
+   314→   314→        {stageFilter !== 'ALL' && (
+   315→   315→          <Button variant="ghost" size="sm" onClick={() => setStageFilter('ALL')}>
+   316→   316→            Clear stage filter
+   317→   317→          </Button>
+   318→   318→        )}
+   319→   319→      </div>
+   320→   320→
+   321→   321→      {/* Table */}
+   322→   322→      <Card className="py-0 gap-0">
+   323→   323→        <CardContent className="p-0">
+   324→   324→          {listQuery.isError && (
+   325→   325→            <p className="p-4 text-sm text-destructive">
+   326→   326→              Failed to load opportunities: {listQuery.error.message}
+   327→   327→            </p>
+   328→   328→          )}
+   329→   329→          <div className="overflow-x-auto">
+   330→   330→            <Table className="min-w-[880px]">
+   331→   331→              <TableHeader>
+   332→   332→                <TableRow>
+   333→   333→                  <TableHead>Title</TableHead>
+   334→   334→                  <TableHead>Third party</TableHead>
+   335→   335→                  <TableHead>Stage</TableHead>
+   336→   336→                  <TableHead className="text-right">Amount</TableHead>
+   337→   337→                  <TableHead>Probability</TableHead>
+   338→   338→                  <TableHead>Expected close</TableHead>
+   339→   339→                  <TableHead className="text-right">Actions</TableHead>
+   340→   340→                </TableRow>
+   341→   341→              </TableHeader>
+   342→   342→              <TableBody>
+   343→   343→                {listQuery.isPending &&
+   344→   344→                  Array.from({ length: 5 }).map((_, i) => (
+   345→   345→                    <TableRow key={i}>
+   346→   346→                      <TableCell colSpan={7}>
+   347→   347→                        <Skeleton className="h-8 w-full" />
+   348→   348→                      </TableCell>
+   349→   349→                    </TableRow>
+   350→   350→                  ))}
+   351→   351→                {!listQuery.isPending && filtered.length === 0 && (
+   352→   352→                  <TableRow>
+   353→   353→                    <TableCell colSpan={7} className="p-0">
+   354→   354→                      <div className="p-6">
+   355→   355→                        <EmptyState
+   356→   356→                          icon={Target}
+   357→   357→                          title={data.length === 0 ? 'No opportunities yet' : 'No opportunities match your filters'}
+   358→   358→                          description={
+   359→   359→                            data.length === 0
+   360→   360→                              ? 'Create your first opportunity to start tracking the pipeline.'
+   361→   361→                              : 'Try another search term or clear the stage filter.'
+   362→   362→                          }
+   363→   363→                          actionLabel={data.length === 0 ? 'New opportunity' : undefined}
+   364→   364→                          onAction={data.length === 0 ? openCreate : undefined}
+   365→   365→                        />
+   366→   366→                      </div>
+   367→   367→                    </TableCell>
+   368→   368→                  </TableRow>
+   369→   369→                )}
+   370→   370→                {filtered.map((o) => {
+   371→   371→                  const closed = o.stage === 'WON' || o.stage === 'LOST'
+   372→   372→                  return (
+   373→   373→                    <TableRow key={o.id}>
+   374→   374→                      <TableCell className="max-w-[240px]">
+   375→   375→                        <p className="truncate font-medium" title={o.title}>
+   376→   376→                          {o.title}
+   377→   377→                        </p>
+   378→   378→                        {o.notes && (
+   379→   379→                          <p className="truncate text-xs text-muted-foreground" title={o.notes}>
+   380→   380→                            {o.notes}
+   381→   381→                          </p>
+   382→   382→                        )}
+   383→   383→                      </TableCell>
+   384→   384→                      <TableCell>
+   385→   385→                        <p className="whitespace-nowrap text-sm">{o.thirdParty.name}</p>
+   386→   386→                        <p className="font-mono text-xs text-muted-foreground">{o.thirdParty.code}</p>
+   387→   387→                      </TableCell>
+   388→   388→                      <TableCell>
+   389→   389→                        <DocStatusBadge status={o.stage} />
+   390→   390→                      </TableCell>
+   391→   391→                      <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">
+   392→   392→                        {formatMoney(o.amount)}
+   393→   393→                      </TableCell>
+   394→   394→                      <TableCell>
+   395→   395→                        <div className="flex items-center gap-2">
+   396→   396→                          <Progress
+   397→   397→                            value={o.probability}
+   398→   398→                            className={cn('h-2 w-16', closed && (o.stage === 'LOST' ? 'opacity-40' : ''))}
+   399→   399→                            aria-label={`Probability ${o.probability}%`}
+   400→   400→                          />
+   401→   401→                          <span className="text-xs tabular-nums text-muted-foreground">{o.probability}%</span>
+   402→   402→                        </div>
+   403→   403→                      </TableCell>
+   404→   404→                      <TableCell className="whitespace-nowrap text-sm">
+   405→   405→                        {o.expectedCloseDate ? (
+   406→   406→                          <>
+   407→   407→                            {formatDate(o.expectedCloseDate)}
+   408→   408→                            <p className="text-xs text-muted-foreground">{relativeDays(o.expectedCloseDate)}</p>
+   409→   409→                          </>
+   410→   410→                        ) : (
+   411→   411→                          '—'
+   412→   412→                        )}
+   413→   413→                      </TableCell>
+   414→   414→                      <TableCell>
+   415→   415→                        <div className="flex items-center justify-end gap-1">
+   416→   416→                          {!closed && (
+   417→   417→                            <>
+   418→   418→                              <Button
+   419→   419→                                variant="ghost"
+   420→   420→                                size="icon"
+   421→   421→                                className="h-9 w-9 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 sm:h-8 sm:w-8"
+   422→   422→                                onClick={() => quickStageMutation.mutate({ id: o.id, stage: 'WON' })}
+   423→   423→                                disabled={quickStageMutation.isPending}
+   424→   424→                                aria-label={`Mark ${o.title} as won`}
+   425→   425→                                title="Mark as won"
+   426→   426→                              >
+   427→   427→                                <Trophy className="h-4 w-4" aria-hidden />
+   428→   428→                              </Button>
+   429→   429→                              <Button
+   430→   430→                                variant="ghost"
+   431→   431→                                size="icon"
+   432→   432→                                className="h-9 w-9 text-rose-600 hover:bg-rose-50 hover:text-rose-700 sm:h-8 sm:w-8"
+   433→   433→                                onClick={() => quickStageMutation.mutate({ id: o.id, stage: 'LOST' })}
+   434→   434→                                disabled={quickStageMutation.isPending}
+   435→   435→                                aria-label={`Mark ${o.title} as lost`}
+   436→   436→                                title="Mark as lost"
+   437→   437→                              >
+   438→   438→                                <XCircle className="h-4 w-4" aria-hidden />
+   439→   439→                              </Button>
+   440→   440→                            </>
+   441→   441→                          )}
+   442→   442→                          {closed && (
+   443→   443→                            <Button
+   444→   444→                              variant="ghost"
+   445→   445→                              size="icon"
+   446→   446→                              className="h-9 w-9 sm:h-8 sm:w-8"
+   447→   447→                              onClick={() => openEdit(o)}
+   448→   448→                              aria-label={`View ${o.title}`}
+   449→   449→                              title="View"
+   450→   450→                            >
+   451→   451→                              <Eye className="h-4 w-4" aria-hidden />
+   452→   452→                            </Button>
+   453→   453→                          )}
+   454→   454→                          <Button
+   455→   455→                            variant="ghost"
+   456→   456→                            size="icon"
+   457→   457→                            className="h-9 w-9 sm:h-8 sm:w-8"
+   458→   458→                            onClick={() => openEdit(o)}
+   459→   459→                            aria-label={`Edit ${o.title}`}
+   460→   460→                            title="Edit"
+   461→   461→                          >
+   462→   462→                            <Pencil className="h-4 w-4" aria-hidden />
+   463→   463→                          </Button>
+   464→   464→                          <Button
+   465→   465→                            variant="ghost"
+   466→   466→                            size="icon"
+   467→   467→                            className="h-9 w-9 text-muted-foreground hover:text-destructive sm:h-8 sm:w-8"
+   468→   468→                            onClick={() => setDeleteTarget(o)}
+   469→   469→                            aria-label={`Delete ${o.title}`}
+   470→   470→                            title="Delete"
+   471→   471→                          >
+   472→   472→                            <Trash2 className="h-4 w-4" aria-hidden />
+   473→   473→                          </Button>
+   474→   474→                        </div>
+   475→   475→                      </TableCell>
+   476→   476→                    </TableRow>
+   477→   477→                  )
+   478→   478→                })}
+   479→   479→              </TableBody>
+   480→   480→            </Table>
+   481→   481→          </div>
+   482→   482→          {!listQuery.isPending && filtered.length > 0 && (
+   483→   483→            <p className="border-t px-4 py-2 text-xs text-muted-foreground">
+   484→   484→              {filtered.length} of {data.length} opportunit{data.length === 1 ? 'y' : 'ies'} ·
+   485→   485→              open value {formatMoney(
+   486→   486→                filtered
+   487→   487→                  .filter((o) => o.stage !== 'WON' && o.stage !== 'LOST')
+   488→   488→                  .reduce((s, o) => s + o.amount, 0),
+   489→   489→              )}
+   490→   490→            </p>
+   491→   491→          )}
+   492→   492→        </CardContent>
+   493→   493→      </Card>
+   494→   494→
+   495→   495→      {/* Create / edit dialog */}
+   496→   496→      <Dialog open={formOpen} onOpenChange={setFormOpen}>
+   497→   497→        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+   498→   498→          <DialogHeader>
+   499→   499→            <DialogTitle>{editing ? 'Edit opportunity' : 'New opportunity'}</DialogTitle>
+   500→   500→            <DialogDescription>
+   501→   501→              {editing
+   502→   502→                ? `Linked to ${editing.thirdParty.name} — update the deal details below.`
+   503→   503→                : 'Create a deal and track it through the pipeline stages.'}
+   504→   504→            </DialogDescription>
+   505→   505→          </DialogHeader>
+   506→   506→
+   507→   507→          <div className="grid gap-4 sm:grid-cols-2">
+   508→   508→            <div className="space-y-1.5 sm:col-span-2">
+   509→   509→              <Label htmlFor="opp-title">
+   510→   510→                Title <span className="text-destructive">*</span>
+   511→   511→              </Label>
+   512→   512→              <Input
+   513→   513→                id="opp-title"
+   514→   514→                value={form.title}
+   515→   515→                onChange={(e) => setForm({ ...form, title: e.target.value })}
+   516→   516→                placeholder="Acme — Annual hardware renewal"
+   517→   517→                autoFocus
+   518→   518→              />
+   519→   519→            </div>
+   520→   520→            <div className="space-y-1.5 sm:col-span-2">
+   521→   521→              <Label htmlFor="opp-tp">
+   522→   522→                Third party <span className="text-destructive">*</span>
+   523→   523→              </Label>
+   524→   524→              <Select
+   525→   525→                value={form.thirdPartyId}
+   526→   526→                onValueChange={(v) => setForm({ ...form, thirdPartyId: v })}
+   527→   527→              >
+   528→   528→                <SelectTrigger id="opp-tp" className="w-full">
+   529→   529→                  <SelectValue placeholder="Select a third party" />
+   530→   530→                </SelectTrigger>
+   531→   531→                <SelectContent>
+   532→   532→                  {sortedThirdParties.length === 0 && (
+   533→   533→                    <div className="px-3 py-2 text-sm text-muted-foreground">
+   534→   534→                      No third parties available
+   535→   535→                    </div>
+   536→   536→                  )}
+   537→   537→                  {sortedThirdParties.map((tp) => (
+   538→   538→                    <SelectItem key={tp.id} value={tp.id}>
+   539→   539→                      {tp.name}
+   540→   540→                    </SelectItem>
+   541→   541→                  ))}
+   542→   542→                </SelectContent>
+   543→   543→              </Select>
+   544→   544→            </div>
+   545→   545→            <div className="space-y-1.5">
+   546→   546→              <Label htmlFor="opp-stage">Stage</Label>
+   547→   547→              <Select
+   548→   548→                value={form.stage}
+   549→   549→                onValueChange={(v) => setForm({ ...form, stage: v as OpportunityStage })}
+   550→   550→              >
+   551→   551→                <SelectTrigger id="opp-stage" className="w-full">
+   552→   552→                  <SelectValue />
+   553→   553→                </SelectTrigger>
+   554→   554→                <SelectContent>
+   555→   555→                  {STAGES.map((s) => (
+   556→   556→                    <SelectItem key={s} value={s}>
+   557→   557→                      {STAGE_LABEL[s]}
+   558→   558→                    </SelectItem>
+   559→   559→                  ))}
+   560→   560→                </SelectContent>
+   561→   561→              </Select>
+   562→   562→            </div>
+   563→   563→            <div className="space-y-1.5">
+   564→   564→              <Label htmlFor="opp-amount">Amount (USD)</Label>
+   565→   565→              <Input
+   566→   566→                id="opp-amount"
+   567→   567→                type="number"
+   568→   568→                min={0}
+   569→   569→                step="0.01"
+   570→   570→                value={form.amount}
+   571→   571→                onChange={(e) => setForm({ ...form, amount: e.target.value })}
+   572→   572→                placeholder="0.00"
+   573→   573→              />
+   574→   574→            </div>
+   575→   575→            <div className="space-y-1.5">
+   576→   576→              <Label htmlFor="opp-probability">Probability (0–100 %)</Label>
+   577→   577→              <Input
+   578→   578→                id="opp-probability"
+   579→   579→                type="number"
+   580→   580→                min={0}
+   581→   581→                max={100}
+   582→   582→                step={1}
+   583→   583→                value={form.probability}
+   584→   584→                onChange={(e) => setForm({ ...form, probability: e.target.value })}
+   585→   585→              />
+   586→   586→            </div>
+   587→   587→            <div className="space-y-1.5">
+   588→   588→              <Label htmlFor="opp-date">Expected close date</Label>
+   589→   589→              <Input
+   590→   590→                id="opp-date"
+   591→   591→                type="date"
+   592→   592→                value={form.expectedCloseDate}
+   593→   593→                onChange={(e) => setForm({ ...form, expectedCloseDate: e.target.value })}
+   594→   594→              />
+   595→   595→            </div>
+   596→   596→            <div className="space-y-1.5 sm:col-span-2">
+   597→   597→              <Label htmlFor="opp-notes">Notes</Label>
+   598→   598→              <Textarea
+   599→   599→                id="opp-notes"
+   600→   600→                rows={3}
+   601→   601→                value={form.notes}
+   602→   602→                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+   603→   603→                placeholder="Context, next steps, competitors…"
+   604→   604→              />
+   605→   605→            </div>
+   606→   606→          </div>
+   607→   607→
+   608→   608→          <DialogFooter className="gap-2">
+   609→   609→            <Button variant="outline" onClick={() => setFormOpen(false)}>
+   610→   610→              Cancel
+   611→   611→            </Button>
+   612→   612→            <Button onClick={() => saveMutation.mutate()} disabled={!canSave}>
+   613→   613→              {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+   614→   614→              {editing ? 'Save changes' : 'Create opportunity'}
+   615→   615→            </Button>
+   616→   616→          </DialogFooter>
+   617→   617→        </DialogContent>
+   618→   618→      </Dialog>
+   619→   619→
+   620→   620→      {/* Delete confirmation */}
+   621→   621→      <AlertDialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+   622→   622→        <AlertDialogContent>
+   623→   623→          <AlertDialogHeader>
+   624→   624→            <AlertDialogTitle>Delete this opportunity?</AlertDialogTitle>
+   625→   625→            <AlertDialogDescription>
+   626→   626→              {deleteTarget
+   627→   627→                ? `"${deleteTarget.title}" (${deleteTarget.thirdParty.name}) will be permanently removed. This cannot be undone.`
+   628→   628→                : ''}
+   629→   629→            </AlertDialogDescription>
+   630→   630→          </AlertDialogHeader>
+   631→   631→          <AlertDialogFooter>
+   632→   632→            <AlertDialogCancel>Cancel</AlertDialogCancel>
+   633→   633→            <AlertDialogAction
+   634→   634→              className="bg-destructive text-white hover:bg-destructive/90"
+   635→   635→              onClick={() => {
+   636→   636→                if (deleteTarget) deleteMutation.mutate(deleteTarget.id)
+   637→   637→                setDeleteTarget(null)
+   638→   638→              }}
+   639→   639→            >
+   640→   640→              Delete
+   641→   641→            </AlertDialogAction>
+   642→   642→          </AlertDialogFooter>
+   643→   643→        </AlertDialogContent>
+   644→   644→      </AlertDialog>
+   645→   645→    </div>
+   646→   646→  )
+   647→   647→}
+   648→   648→

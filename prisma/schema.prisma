@@ -1,0 +1,554 @@
+// ============================================================================
+// DoliNext — Dolibarr-style ERP & CRM (rebuilt on Next.js 16 + Prisma/SQLite)
+// NOTE: SQLite does not support Prisma enums -> all statuses are String fields.
+// Allowed values are documented per-field and enforced by zod in API routes.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Sequences for human-friendly document refs (e.g. PR2601-0001, Dolibarr style)
+// ---------------------------------------------------------------------------
+model Sequence {
+  key   String @id // prefix, e.g. "CU", "PR", "SO", "IN", "PO", "SI", "TK", "PJ", "CT", "ER"
+  value Int    @default(0)
+}
+
+// ---------------------------------------------------------------------------
+// CRM — Third Parties (customers / prospects / suppliers) + Contacts
+// ---------------------------------------------------------------------------
+model ThirdParty {
+  id           String   @id @default(cuid())
+  code         String   @unique // e.g. CU2601-0001
+  name         String
+  type         String   @default("CUSTOMER") // CUSTOMER | PROSPECT | SUPPLIER | CUSTOMER_SUPPLIER
+  status       String   @default("ACTIVE") // ACTIVE | SUSPENDED
+  email        String?
+  phone        String?
+  website      String?
+  address      String?
+  zip          String?
+  city         String?
+  country      String?
+  vatNumber    String?
+  currency     String   @default("USD")
+  paymentTerms String   @default("NET30") // ON_ORDER | NET15 | NET30 | NET60
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  contacts        Contact[]
+  opportunities   Opportunity[]
+  proposals       Proposal[]
+  saleOrders      SaleOrder[]
+  invoices        Invoice[]
+  contracts       Contract[]
+  purchaseOrders  PurchaseOrder[]
+  supplierInvoices SupplierInvoice[]
+  tickets         Ticket[]
+  projects        Project[]
+  agendaEvents    AgendaEvent[]
+}
+
+model Contact {
+  id           String  @id @default(cuid())
+  thirdPartyId String?
+  thirdParty   ThirdParty? @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+  firstName    String
+  lastName     String
+  position     String?
+  email        String?
+  phone        String?
+  mobile       String?
+  isPrimary    Boolean @default(false)
+  notes        String?
+  createdAt    DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// CRM — Opportunities (lead pipeline)
+// ---------------------------------------------------------------------------
+model Opportunity {
+  id                String    @id @default(cuid())
+  title             String
+  thirdPartyId      String
+  thirdParty        ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+  stage             String    @default("NEW") // NEW | QUALIFIED | PROPOSAL | NEGOTIATION | WON | LOST
+  amount            Float     @default(0)
+  probability       Int       @default(10) // 0..100
+  expectedCloseDate DateTime?
+  notes             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Products & Services + Stock
+// ---------------------------------------------------------------------------
+model Product {
+  id          String  @id @default(cuid())
+  ref         String  @unique // e.g. PD2601-0001
+  label       String
+  description String?
+  type        String  @default("PRODUCT") // PRODUCT | SERVICE
+  sellPrice   Float   @default(0)
+  costPrice   Float   @default(0)
+  vatRate     Float   @default(20)
+  unit        String  @default("unit")
+  barcode     String?
+  manageStock Boolean @default(true) // false for services
+  stockQty    Int     @default(0) // denormalized current stock (products only)
+  minStock    Int     @default(0)
+  status      String  @default("ACTIVE") // ACTIVE | SUSPENDED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stockMovements StockMovement[]
+}
+
+model Warehouse {
+  id        String  @id @default(cuid())
+  code      String  @unique
+  name      String
+  address   String?
+  city      String?
+  country   String?
+  isDefault Boolean @default(false)
+
+  movements StockMovement[]
+}
+
+model StockMovement {
+  id          String    @id @default(cuid())
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouseId String?
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+  type        String    @default("IN") // IN | OUT | ADJUST
+  qty         Int // signed: positive = stock in, negative = stock out
+  reference   String? // linked document ref (PO, SO...)
+  note        String?
+  date        DateTime  @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Sales — Commercial Proposals
+// ---------------------------------------------------------------------------
+model Proposal {
+  id            String    @id @default(cuid())
+  ref           String    @unique // PRyymm-#### 
+  thirdPartyId  String
+  thirdParty    ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+  status        String    @default("DRAFT") // DRAFT | VALIDATED | ACCEPTED | REFUSED | CLOSED
+  date          DateTime  @default(now())
+  validUntil    DateTime?
+  subtotal      Float     @default(0)
+  discountTotal Float     @default(0)
+  vatTotal      Float     @default(0)
+  total         Float     @default(0)
+  notes         String?
+  projectId     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines ProposalLine[]
+}
+
+model ProposalLine {
+  id         String  @id @default(cuid())
+  proposalId String
+  proposal   Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  productId  String?
+  label      String
+  description String?
+  qty        Float   @default(1)
+  unitPrice  Float   @default(0)
+  discountPct Float  @default(0)
+  vatRate    Float   @default(20)
+  sort       Int     @default(0)
+}
+
+// ---------------------------------------------------------------------------
+// Sales — Sale Orders
+// ---------------------------------------------------------------------------
+model SaleOrder {
+  id            String    @id @default(cuid())
+  ref           String    @unique // SOyymm-####
+  thirdPartyId  String
+  thirdParty    ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+  status        String    @default("DRAFT") // DRAFT | VALIDATED | DELIVERED | BILLED | CANCELLED
+  date          DateTime  @default(now())
+  deliveryDate  DateTime?
+  subtotal      Float     @default(0)
+  discountTotal Float     @default(0)
+  vatTotal      Float     @default(0)
+  total         Float     @default(0)
+  notes         String?
+  proposalId    String?
+  projectId     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines    SaleOrderLine[]
+  invoices Invoice[]
+}
+
+model SaleOrderLine {
+  id          String  @id @default(cuid())
+  saleOrderId String
+  saleOrder   SaleOrder @relation(fields: [saleOrderId], references: [id], onDelete: Cascade)
+  productId   String?
+  label       String
+  description String?
+  qty         Float   @default(1)
+  unitPrice   Float   @default(0)
+  discountPct Float   @default(0)
+  vatRate     Float   @default(20)
+  sort        Int     @default(0)
+}
+
+// ---------------------------------------------------------------------------
+// Billing — Customer Invoices + Payments
+// ---------------------------------------------------------------------------
+model Invoice {
+  id            String    @id @default(cuid())
+  ref           String    @unique // INyymm-####
+  thirdPartyId  String
+  thirdParty    ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+  status        String    @default("DRAFT") // DRAFT | UNPAID | PARTIAL | PAID | CANCELLED
+  date          DateTime  @default(now())
+  dueDate       DateTime?
+  subtotal      Float     @default(0)
+  discountTotal Float     @default(0)
+  vatTotal      Float     @default(0)
+  total         Float     @default(0)
+  paidAmount    Float     @default(0)
+  notes         String?
+  saleOrderId   String?
+  saleOrder     SaleOrder? @relation(fields: [saleOrderId], references: [id], onDelete: SetNull)
+  proposalId    String?
+  projectId     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines    InvoiceLine[]
+  payments Payment[]
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId   String?
+  label       String
+  description String?
+  qty         Float   @default(1)
+  unitPrice   Float   @default(0)
+  discountPct Float   @default(0)
+  vatRate     Float   @default(20)
+  sort        Int     @default(0)
+}
+
+model Payment {
+  id                String   @id @default(cuid())
+  amount            Float
+  method            String   @default("BANK_TRANSFER") // CASH | CARD | BANK_TRANSFER | CHECK | OTHER
+  date              DateTime @default(now())
+  reference         String?
+  note              String?
+  invoiceId         String?
+  invoice           Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  supplierInvoiceId String?
+  supplierInvoice   SupplierInvoice? @relation(fields: [supplierInvoiceId], references: [id], onDelete: Cascade)
+  bankAccountId     String?
+  createdAt         DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Purchasing — Supplier Orders + Supplier Invoices
+// ---------------------------------------------------------------------------
+model PurchaseOrder {
+  id           String    @id @default(cuid())
+  ref          String    @unique // POyymm-####
+  thirdPartyId String
+  thirdParty   ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+  status       String    @default("DRAFT") // DRAFT | VALIDATED | RECEIVED | BILLED | CANCELLED
+  date         DateTime  @default(now())
+  expectedDate DateTime?
+  subtotal     Float     @default(0)
+  discountTotal Float    @default(0)
+  vatTotal     Float     @default(0)
+  total        Float     @default(0)
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  lines PurchaseOrderLine[]
+}
+
+model PurchaseOrderLine {
+  id          String  @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId   String?
+  label       String
+  description String?
+  qty         Float   @default(1)
+  unitPrice   Float   @default(0)
+  discountPct Float   @default(0)
+  vatRate     Float   @default(20)
+  sort        Int     @default(0)
+}
+
+model SupplierInvoice {
+  id             String    @id @default(cuid())
+  ref            String    @unique // SIyymm-####
+  thirdPartyId   String
+  thirdParty     ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+  status         String    @default("DRAFT") // DRAFT | UNPAID | PARTIAL | PAID | CANCELLED
+  date           DateTime  @default(now())
+  dueDate        DateTime?
+  subtotal       Float     @default(0)
+  vatTotal       Float     @default(0)
+  total          Float     @default(0)
+  paidAmount     Float     @default(0)
+  notes          String?
+  purchaseOrderId String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  payments Payment[]
+}
+
+// ---------------------------------------------------------------------------
+// Contracts / Subscriptions
+// ---------------------------------------------------------------------------
+model Contract {
+  id           String    @id @default(cuid())
+  ref          String    @unique // CTyymm-####
+  thirdPartyId String
+  thirdParty   ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+  label        String
+  status       String    @default("DRAFT") // DRAFT | ACTIVE | EXPIRED | CANCELLED
+  startDate    DateTime  @default(now())
+  endDate      DateTime?
+  amount       Float     @default(0)
+  billingCycle String    @default("MONTHLY") // ONE_TIME | MONTHLY | QUARTERLY | YEARLY
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Projects, Tasks & Timesheets
+// ---------------------------------------------------------------------------
+model Project {
+  id           String    @id @default(cuid())
+  ref          String    @unique // PJyymm-####
+  title        String
+  description  String?
+  thirdPartyId String?
+  thirdParty   ThirdParty? @relation(fields: [thirdPartyId], references: [id], onDelete: SetNull)
+  status       String    @default("OPEN") // OPEN | SUSPENDED | CLOSED
+  startDate    DateTime?
+  endDate      DateTime?
+  budget       Float     @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  tasks Task[]
+}
+
+model Task {
+  id           String  @id @default(cuid())
+  projectId    String
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ref          String  @unique // TSyymm-####
+  label        String
+  description  String?
+  status       String  @default("TODO") // TODO | IN_PROGRESS | DONE | CANCELLED
+  priority     String  @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
+  progress     Int     @default(0) // 0..100
+  plannedHours Float   @default(0)
+  startDate    DateTime?
+  endDate      DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  timeEntries TimeEntry[]
+}
+
+model TimeEntry {
+  id         String   @id @default(cuid())
+  taskId     String
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employeeId String?
+  employee   Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  date       DateTime @default(now())
+  hours      Float
+  note       String?
+  createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Support — Tickets (Help Desk)
+// ---------------------------------------------------------------------------
+model Ticket {
+  id           String   @id @default(cuid())
+  ref          String   @unique // TKyymm-####
+  subject      String
+  thirdPartyId String?
+  thirdParty   ThirdParty? @relation(fields: [thirdPartyId], references: [id], onDelete: SetNull)
+  contactId    String?
+  status       String   @default("NEW") // NEW | ASSIGNED | IN_PROGRESS | RESOLVED | CLOSED
+  priority     String   @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
+  category     String? // SALES | BILLING | TECHNICAL | OTHER
+  assignedTo   String?
+  description  String?
+  resolution   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  messages TicketMessage[]
+}
+
+model TicketMessage {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author     String
+  content    String
+  isInternal Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge Base
+// ---------------------------------------------------------------------------
+model KnowledgeArticle {
+  id        String   @id @default(cuid())
+  title     String
+  category  String   @default("General")
+  content   String
+  status    String   @default("DRAFT") // DRAFT | PUBLISHED | ARCHIVED
+  views     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// HR — Employees, Leave, Expenses
+// ---------------------------------------------------------------------------
+model Employee {
+  id           String    @id @default(cuid())
+  employeeCode String    @unique // EM0001
+  firstName    String
+  lastName     String
+  email        String?
+  phone        String?
+  position     String?
+  department   String?
+  hireDate     DateTime?
+  salary       Float     @default(0)
+  status       String    @default("ACTIVE") // ACTIVE | SUSPENDED
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  leaveRequests  LeaveRequest[]
+  expenseReports ExpenseReport[]
+  timeEntries    TimeEntry[]
+}
+
+model LeaveRequest {
+  id         String   @id @default(cuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  type       String   @default("PAID") // PAID | SICK | UNPAID | OTHER
+  startDate  DateTime
+  endDate    DateTime
+  days       Float
+  reason     String?
+  status     String   @default("PENDING") // PENDING | APPROVED | REJECTED | CANCELLED
+  createdAt  DateTime @default(now())
+}
+
+model ExpenseReport {
+  id         String   @id @default(cuid())
+  ref        String   @unique // ERyymm-####
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  status     String   @default("DRAFT") // DRAFT | SUBMITTED | APPROVED | REJECTED | PAID
+  date       DateTime @default(now())
+  notes      String?
+  total      Float    @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  lines ExpenseLine[]
+}
+
+model ExpenseLine {
+  id       String  @id @default(cuid())
+  reportId String
+  report   ExpenseReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  category String  @default("TRAVEL") // MEAL | TRAVEL | HOTEL | SUPPLIES | OTHER
+  date     DateTime @default(now())
+  amount   Float
+  note     String?
+}
+
+// ---------------------------------------------------------------------------
+// Finance — Bank accounts & transactions
+// ---------------------------------------------------------------------------
+model BankAccount {
+  id             String  @id @default(cuid())
+  name           String
+  bank           String?
+  accountNumber  String?
+  currency       String  @default("USD")
+  type           String  @default("BANK") // BANK | CASH
+  openingBalance Float   @default(0)
+  currentBalance Float   @default(0)
+  createdAt      DateTime @default(now())
+
+  transactions BankTransaction[]
+}
+
+model BankTransaction {
+  id           String   @id @default(cuid())
+  accountId    String
+  account      BankAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  date         DateTime @default(now())
+  label        String
+  amount       Float // signed: positive = credit, negative = debit
+  category     String? // SALES | PURCHASES | SALARIES | EXPENSES | TRANSFER | OTHER
+  reference    String?
+  reconciled   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Productivity — Agenda (calendar)
+// ---------------------------------------------------------------------------
+model AgendaEvent {
+  id           String    @id @default(cuid())
+  title        String
+  description  String?
+  type         String    @default("MEETING") // MEETING | CALL | TASK | REMINDER | OTHER
+  start        DateTime
+  end          DateTime?
+  allDay       Boolean   @default(false)
+  location     String?
+  thirdPartyId String?
+  thirdParty   ThirdParty? @relation(fields: [thirdPartyId], references: [id], onDelete: SetNull)
+  projectId    String?
+  owner        String?
+  createdAt    DateTime  @default(now())
+}
