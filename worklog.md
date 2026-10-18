@@ -662,3 +662,33 @@ Work Log:
 Stage Summary:
 - "PDF-ready quotes and bills" is now literally true: every document module's print dialog offers a one-click real PDF download that respects the tenant's template designer settings (accent/logo/fields/notes/paper size) and works inside the cookie-blocked preview iframe (Bearer + fetch→blob)
 - RBAC enforced on PDFs; receipts work for both customer-invoice and supplier-invoice payments
+
+---
+Task ID: 25
+Agent: Main orchestrator (Z.ai Code)
+Task: "Buy Me a Coffee" supporter page with KHQR image upload setting
+
+Work Log:
+- Prisma: added CoffeePage (tenantId @unique — one page/tenant; displayName, tagline, currency USD|KHR, presetAmounts CSV, khqrImage data URL ≤2 MB, khqrName, khqrBank) + CoffeeSupport (support log: name, amount, currency, message, date; @@index tenantId) → db:push OK
+- RBAC: PERMISSION_MODULES += { coffee, 'Buy me a coffee page', group Administration } → role editor matrix picks it up automatically; one-off scripts/seed-coffee-perms.ts appended coffee.view to existing Viewer/Sales/Accountant + coffee.edit to Manager (Administrator is '*'); fresh registrations get it via SYSTEM_ROLE_DEFS computed from the catalog
+- API (all {data}/{error}, force-dynamic, tenant-scoped):
+  * GET /api/coffee/page (requireAuth) → { page: config-or-defaults, supporters: ≤500 date-desc }
+  * PUT /api/coffee/page (requirePerm coffee.edit) → partial zod upsert (displayName ≤80, tagline ≤200, currency enum, presetAmounts regex + >0 refine, khqrImage data:image png/jpeg/webp ≤3.2M chars nullable, khqrName/khqrBank; empty patch → 400)
+  * POST /api/coffee/supports (coffee.edit) → {name, amount>0, currency USD|KHR, message?, date YYYY-MM-DD (noon-UTC normalized)}
+  * DELETE /api/coffee/supports/[id] (coffee.edit) → tenant-scoped findFirst, cross-tenant → 404
+- erp-app.tsx: new NAV group "Coffee" (icon Coffee) between Support and Configuration with child "Buy Me a Coffee"; NAV_PERMISSIONS.coffee='coffee'; MODULE_VIEWS.coffee lazy import
+- NEW modules/coffee.tsx (3 tabs; fetchApi everywhere → Bearer-safe in the preview iframe; canEdit(permissions,'coffee') gates writes):
+  * "Coffee page" — warm amber/orange hero (gradient, Coffee icon, editable name/tagline, supporters-count + total-raised badges), preset-amount chips + custom input + amber CTA opening a pay dialog (big QR, account · bank line, 3 scan steps); KHQR card (QR on white panel, account/bank, KHQR explainer, Download QR = dataURL anchor, no network → works in iframe); supporters wall (recent 12 w/ initials avatar, amount badge, message, date); empty states jump to Settings
+  * "Settings" — KHQR upload card: hidden file input (png/jpeg/webp, client ≤2 MB guard) inside a styled label button; Upload/Replace saves IMMEDIATELY via PUT {khqrImage}, Remove sends null; live preview + "KHQR ready / QR not set yet" header badge. Page details card: displayName, tagline (live n/200 counter), currency Select (USD/KHR → symbol $ / ៛ swaps everywhere), preset amounts (normalized CSV, ≤8, validated), khqrName/khqrBank; Save → PUT → "Coffee page saved"
+  * "Support log" — 3 stat cards (Total raised in page currency + other-currency note, Supporters count, Latest support), "Record support" dialog (name default Anonymous, amount w/ symbol prefix, currency, optional message, date default today), scrollable entry list (max-h-[480px] styled scrollbar) with per-row delete
+  * React patterns: settings tab + dialogs are keyed conditional mounts (useState initializers, key={page.updatedAt}) — no set-state-in-effect; cache updates via setQueryData for config saves, invalidate for support rows
+- FOUND + FIXED app-wide bug: layout.tsx mounted only the Radix <Toaster/>, but users/import-export/coffee call sonner's toast() → every sonner toast was silently swallowed. Root layout now also mounts sonner <Toaster position="bottom-right" richColors closeButton/> (Radix one kept — 8 older modules still use useToast)
+- Verification: 27/27 curl checks (defaults on first GET; text PUT; spaced/zero/negative/EUR/GIF/oversized/empty-patch rejects; image upload + clear; 3 support posts + invalid rejects; date-desc ordering; DELETE → 404 repeat; anon 401; Viewer GET 200/PUT 403; Sales PUT 403; fresh-tenant isolation → defaults + 0 supporters; temp tenant removed via DB cleanup, only Demo Organization remains)
+- Browser E2E (admin + separate Viewer session): login → Coffee group in sidebar → module loads; hero chips ($8.00/2), preset chips, custom input, pay dialog (QR + steps) verified visually + by text; Settings: replaced KHQR via real file-input dispatch (preview src 17218→5250 bytes proves PUT→cache→re-render), tagline edit → Save → API-verified, Remove image → empty state + badge flip, re-upload restored; Download QR fires dataURL anchor; Support log: added "Test Browser" entry via dialog (total $8→$10), wall shows it, delete → toast + removal; Viewer (pat@demo.local): module visible, hero + QR render, NO Save/Record/delete controls; reload → module rehydrates from Bearer token; mobile 390px: no horizontal overflow, stacked cards, full-width 44px controls; desktop 1280px screenshots clean; zero console/page errors; dev.log free of 5xx; eslint + tsc clean
+- Demo state left in t_demo: page "Buy DoliNext a coffee" w/ placeholder QR (clearly replaceable in Settings), khqrName DARA CHAN, khqrBank "Bakong · ACLEDA", presets 1,3,5,10 USD; supporters Chan Dara $3 + Vuthy $5
+
+Stage Summary:
+- Every tenant gets a supporter page: customizable hero + amounts, KHQR payment QR (upload/replace/remove, ≤2 MB, stored as data URL, shown in pay dialog + page + downloadable), and a real support log powering the supporters wall and total-raised KPIs
+- RBAC: coffee.view (all roles incl. patched Viewer) / coffee.edit (Administrator, Manager; grantable via matrix); API enforced server-side (401/403/404)
+- Toast bug fix benefits the whole app (sonner toasts now actually render)
+- Demo credentials unchanged: admin@dolinext.com / demo123 · pat@demo.local / testpass123 (Viewer)

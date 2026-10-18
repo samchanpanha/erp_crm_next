@@ -1,0 +1,658 @@
+     1→'use client'
+     2→
+     3→import { useEffect, useMemo, useState } from 'react'
+     4→import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+     5→import dynamic from 'next/dynamic'
+     6→import {
+     7→  LayoutDashboard, Building2, Target, FileText, ShoppingCart, FileSignature,
+     8→  Receipt, CreditCard, Landmark, Truck, PackageCheck, Package, Boxes,
+     9→  FolderKanban, Users, Palmtree, Wallet, LifeBuoy, BookOpen, CalendarDays,
+    10→  ChartColumn, Settings as SettingsIcon, Menu, Search, Plus, LogOut,
+    11→  ShieldCheck, Loader2, ChevronDown, House, Contact, TrendingUp,
+    12→  ShoppingBag, Warehouse, Briefcase, Headphones, SlidersHorizontal,
+    13→  type LucideIcon,
+    14→} from 'lucide-react'
+    15→import { cn } from '@/lib/utils'
+    16→import { canView, canEdit } from '@/lib/permissions'
+    17→import { useAuthStore, type SessionUser } from '@/lib/auth-store'
+    18→import { authHeaders } from '@/components/erp/lib/session-token'
+    19→import { Button } from '@/components/ui/button'
+    20→import { Input } from '@/components/ui/input'
+    21→import { Sheet, SheetContent, SheetDescription, SheetTrigger, SheetTitle } from '@/components/ui/sheet'
+    22→import { ScrollArea } from '@/components/ui/scroll-area'
+    23→import {
+    24→  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+    25→  DropdownMenuSeparator, DropdownMenuTrigger,
+    26→} from '@/components/ui/dropdown-menu'
+    27→import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+    28→import AuthScreen from '@/components/erp/auth-screen'
+    29→
+    30→const loadingFallback = () => (
+    31→  <div className="flex h-64 items-center justify-center gap-3 text-muted-foreground">
+    32→    <span className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+    33→    <span className="text-sm">Loading module…</span>
+    34→  </div>
+    35→)
+    36→
+    37→interface NavItem { key: string; label: string; icon: LucideIcon }
+    38→interface NavGroup { group: string; icon: LucideIcon; items: NavItem[] }
+    39→
+    40→/**
+    41→ * Sidebar menu tree: parent groups (collapsible) → child modules.
+    42→ * Group membership only affects navigation UI — permissions stay keyed by item.
+    43→ */
+    44→export const NAV: NavGroup[] = [
+    45→  {
+    46→    group: 'Home',
+    47→    icon: House,
+    48→    items: [
+    49→      { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    50→      { key: 'reports', label: 'Reports', icon: ChartColumn },
+    51→      { key: 'agenda', label: 'Agenda', icon: CalendarDays },
+    52→    ],
+    53→  },
+    54→  {
+    55→    group: 'CRM & Sales',
+    56→    icon: Contact,
+    57→    items: [
+    58→      { key: 'third-parties', label: 'Third Parties', icon: Building2 },
+    59→      { key: 'opportunities', label: 'Opportunities', icon: Target },
+    60→      { key: 'proposals', label: 'Proposals', icon: FileText },
+    61→      { key: 'sale-orders', label: 'Sale Orders', icon: ShoppingCart },
+    62→      { key: 'contracts', label: 'Contracts', icon: FileSignature },
+    63→    ],
+    64→  },
+    65→  {
+    66→    group: 'Billing & Finance',
+    67→    icon: Wallet,
+    68→    items: [
+    69→      { key: 'invoices', label: 'Invoices', icon: Receipt },
+    70→      { key: 'payments', label: 'Payments', icon: CreditCard },
+    71→      { key: 'bank', label: 'Bank & Cash', icon: Landmark },
+    72→    ],
+    73→  },
+    74→  {
+    75→    group: 'Purchasing',
+    76→    icon: ShoppingBag,
+    77→    items: [
+    78→      { key: 'purchase-orders', label: 'Supplier Orders', icon: Truck },
+    79→      { key: 'supplier-invoices', label: 'Supplier Invoices', icon: PackageCheck },
+    80→    ],
+    81→  },
+    82→  {
+    83→    group: 'Products & Stock',
+    84→    icon: Warehouse,
+    85→    items: [
+    86→      { key: 'products', label: 'Products & Services', icon: Package },
+    87→      { key: 'stock', label: 'Stock & Warehouses', icon: Boxes },
+    88→    ],
+    89→  },
+    90→  {
+    91→    group: 'Projects',
+    92→    icon: FolderKanban,
+    93→    items: [{ key: 'projects', label: 'Projects & Tasks', icon: FolderKanban }],
+    94→  },
+    95→  {
+    96→    group: 'HR',
+    97→    icon: Briefcase,
+    98→    items: [
+    99→      { key: 'employees', label: 'Employees', icon: Users },
+   100→      { key: 'leave', label: 'Leave Requests', icon: Palmtree },
+   101→      { key: 'expenses', label: 'Expense Reports', icon: Wallet },
+   102→    ],
+   103→  },
+   104→  {
+   105→    group: 'Support',
+   106→    icon: Headphones,
+   107→    items: [
+   108→      { key: 'tickets', label: 'Tickets', icon: LifeBuoy },
+   109→      { key: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
+   110→    ],
+   111→  },
+   112→  {
+   113→    group: 'Configuration',
+   114→    icon: SlidersHorizontal,
+   115→    items: [
+   116→      { key: 'settings', label: 'Settings', icon: SettingsIcon },
+   117→      { key: 'users', label: 'Users & Roles', icon: ShieldCheck },
+   118→    ],
+   119→  },
+   120→]
+   121→
+   122→/** Nav key → permission module (dashboard has no entry: always visible) */
+   123→const NAV_PERMISSIONS: Record<string, string> = {
+   124→  reports: 'reports', 'third-parties': 'thirdparties', opportunities: 'opportunities',
+   125→  proposals: 'proposals', 'sale-orders': 'saleorders', contracts: 'contracts',
+   126→  invoices: 'invoices', payments: 'payments', bank: 'bank',
+   127→  'purchase-orders': 'purchaseorders', 'supplier-invoices': 'supplierinvoices',
+   128→  products: 'products', stock: 'stock', projects: 'projects',
+   129→  employees: 'employees', leave: 'leave', expenses: 'expenses',
+   130→  tickets: 'tickets', knowledge: 'knowledge', agenda: 'agenda',
+   131→  settings: 'settings', users: 'administration',
+   132→}
+   133→
+   134→/** Quick-create entries, gated by the target module's .edit permission */
+   135→const QUICK_CREATE_ITEMS: { key: string; label: string; module: string }[] = [
+   136→  { key: 'third-parties', label: 'Third party / contact', module: 'thirdparties' },
+   137→  { key: 'proposals', label: 'Commercial proposal', module: 'proposals' },
+   138→  { key: 'sale-orders', label: 'Sale order', module: 'saleorders' },
+   139→  { key: 'invoices', label: 'Customer invoice', module: 'invoices' },
+   140→  { key: 'products', label: 'Product / service', module: 'products' },
+   141→  { key: 'tickets', label: 'Support ticket', module: 'tickets' },
+   142→  { key: 'projects', label: 'Project', module: 'projects' },
+   143→  { key: 'agenda', label: 'Agenda event', module: 'agenda' },
+   144→]
+   145→
+   146→/** Lazily loaded module views (files created incrementally per module agent) */
+   147→const MODULE_VIEWS: Record<string, React.ComponentType> = {
+   148→  dashboard: dynamic(() => import('./modules/dashboard'), { ssr: false, loading: loadingFallback }),
+   149→  'third-parties': dynamic(() => import('./modules/third-parties'), { ssr: false, loading: loadingFallback }),
+   150→  opportunities: dynamic(() => import('./modules/opportunities'), { ssr: false, loading: loadingFallback }),
+   151→  proposals: dynamic(() => import('./modules/proposals'), { ssr: false, loading: loadingFallback }),
+   152→  'sale-orders': dynamic(() => import('./modules/sale-orders'), { ssr: false, loading: loadingFallback }),
+   153→  contracts: dynamic(() => import('./modules/contracts'), { ssr: false, loading: loadingFallback }),
+   154→  invoices: dynamic(() => import('./modules/invoices'), { ssr: false, loading: loadingFallback }),
+   155→  payments: dynamic(() => import('./modules/payments'), { ssr: false, loading: loadingFallback }),
+   156→  bank: dynamic(() => import('./modules/bank'), { ssr: false, loading: loadingFallback }),
+   157→  'purchase-orders': dynamic(() => import('./modules/purchase-orders'), { ssr: false, loading: loadingFallback }),
+   158→  'supplier-invoices': dynamic(() => import('./modules/supplier-invoices'), { ssr: false, loading: loadingFallback }),
+   159→  products: dynamic(() => import('./modules/products'), { ssr: false, loading: loadingFallback }),
+   160→  stock: dynamic(() => import('./modules/stock'), { ssr: false, loading: loadingFallback }),
+   161→  projects: dynamic(() => import('./modules/projects'), { ssr: false, loading: loadingFallback }),
+   162→  employees: dynamic(() => import('./modules/employees'), { ssr: false, loading: loadingFallback }),
+   163→  leave: dynamic(() => import('./modules/leave'), { ssr: false, loading: loadingFallback }),
+   164→  expenses: dynamic(() => import('./modules/expenses'), { ssr: false, loading: loadingFallback }),
+   165→  tickets: dynamic(() => import('./modules/tickets'), { ssr: false, loading: loadingFallback }),
+   166→  knowledge: dynamic(() => import('./modules/knowledge'), { ssr: false, loading: loadingFallback }),
+   167→  agenda: dynamic(() => import('./modules/agenda'), { ssr: false, loading: loadingFallback }),
+   168→  reports: dynamic(() => import('./modules/reports'), { ssr: false, loading: loadingFallback }),
+   169→  settings: dynamic(() => import('./modules/settings'), { ssr: false, loading: loadingFallback }),
+   170→  users: dynamic(() => import('./modules/users'), { ssr: false, loading: loadingFallback }),
+   171→}
+   172→
+   173→/** Keep only nav items the user may view; drop groups that become empty. */
+   174→function filterNav(user: SessionUser): NavGroup[] {
+   175→  return NAV
+   176→    .map((g) => ({
+   177→      ...g,
+   178→      items: g.items.filter((item) => {
+   179→        const moduleName = NAV_PERMISSIONS[item.key]
+   180→        return !moduleName || canView(user.permissions, moduleName)
+   181→      }),
+   182→    }))
+   183→    .filter((g) => g.items.length > 0)
+   184→}
+   185→
+   186→function userInitials(name: string): string {
+   187→  const parts = name.trim().split(/\s+/).slice(0, 2)
+   188→  const chars = parts.map((p) => p[0]?.toUpperCase() ?? '').join('')
+   189→  return chars || 'U'
+   190→}
+   191→
+   192→function useHashRoute(allowed: Set<string>): string {
+   193→  const [route, setRoute] = useState('dashboard')
+   194→  useEffect(() => {
+   195→    const read = () => {
+   196→      const h = window.location.hash.replace(/^#\/?/, '') || 'dashboard'
+   197→      // Hidden (permission-gated) or unknown modules fall back to the dashboard
+   198→      setRoute(h in MODULE_VIEWS && allowed.has(h) ? h : 'dashboard')
+   199→    }
+   200→    read()
+   201→    window.addEventListener('hashchange', read)
+   202→    return () => window.removeEventListener('hashchange', read)
+   203→  }, [allowed])
+   204→  return route
+   205→}
+   206→
+   207→function navigate(key: string) {
+   208→  window.location.hash = `#/${key}`
+   209→}
+   210→
+   211→function Logo() {
+   212→  return (
+   213→    <div className="flex items-center gap-2.5">
+   214→      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary font-black text-primary-foreground shadow-sm">
+   215→        DN
+   216→      </div>
+   217→      <div className="leading-tight">
+   218→        <p className="text-sm font-bold tracking-tight">DoliNext</p>
+   219→        <p className="text-[11px] text-muted-foreground">ERP &amp; CRM</p>
+   220→      </div>
+   221→    </div>
+   222→  )
+   223→}
+   224→
+   225→/** localStorage key persisting which sidebar groups are expanded */
+   226→const NAV_OPEN_KEY = 'dolinext_nav_open'
+   227→
+   228→function readOpenGroups(): Set<string> {
+   229→  try {
+   230→    const raw = window.localStorage.getItem(NAV_OPEN_KEY)
+   231→    if (raw) return new Set(JSON.parse(raw) as string[])
+   232→  } catch {
+   233→    // storage blocked — fall through to empty set
+   234→  }
+   235→  return new Set()
+   236→}
+   237→
+   238→function persistOpenGroups(groups: Set<string>) {
+   239→  try {
+   240→    window.localStorage.setItem(NAV_OPEN_KEY, JSON.stringify([...groups]))
+   241→  } catch {
+   242→    // storage blocked — state still lives for this mount
+   243→  }
+   244→}
+   245→
+   246→function groupSlug(group: string): string {
+   247→  return `nav-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+   248→}
+   249→
+   250→/**
+   251→ * Sidebar menu: parent groups (collapsible) → child module links.
+   252→ * Open/closed state persists in localStorage; the group holding the active
+   253→ * route is always expanded, and its parent shows a subtle active hint while
+   254→ * collapsed so users never lose their place.
+   255→ */
+   256→function SidebarContent({ current, nav }: { current: string; nav: NavGroup[] }) {
+   257→  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
+   258→    const stored = readOpenGroups()
+   259→    if (stored.size > 0) return stored
+   260→    // First visit: expand the active group (falls back to Home).
+   261→    const activeGroup = nav.find((g) => g.items.some((i) => i.key === current))?.group
+   262→    return new Set([activeGroup ?? 'Home'])
+   263→  })
+   264→
+   265→  // Keep the active route's group expanded (also covers search/quick-create jumps).
+   266→  // Derived-state adjustment during render — the React-recommended pattern.
+   267→  const [prevCurrent, setPrevCurrent] = useState(current)
+   268→  if (prevCurrent !== current) {
+   269→    setPrevCurrent(current)
+   270→    const group = nav.find((g) => g.items.some((i) => i.key === current))?.group
+   271→    if (group && !openGroups.has(group)) {
+   272→      const next = new Set(openGroups)
+   273→      next.add(group)
+   274→      persistOpenGroups(next)
+   275→      setOpenGroups(next)
+   276→    }
+   277→  }
+   278→
+   279→  function toggleGroup(group: string) {
+   280→    setOpenGroups((prev) => {
+   281→      const next = new Set(prev)
+   282→      if (next.has(group)) next.delete(group)
+   283→      else next.add(group)
+   284→      persistOpenGroups(next)
+   285→      return next
+   286→    })
+   287→  }
+   288→
+   289→  return (
+   290→    <div className="flex h-full flex-col">
+   291→      <div className="px-4 py-4">
+   292→        <Logo />
+   293→      </div>
+   294→      <ScrollArea className="flex-1 px-2 pb-4">
+   295→        <nav aria-label="ERP modules" className="space-y-0.5">
+   296→          {nav.map((g) => {
+   297→            const open = openGroups.has(g.group)
+   298→            const activeChild = g.items.some((i) => i.key === current)
+   299→            return (
+   300→              <div key={g.group}>
+   301→                <button
+   302→                  type="button"
+   303→                  onClick={() => toggleGroup(g.group)}
+   304→                  aria-expanded={open}
+   305→                  aria-controls={groupSlug(g.group)}
+   306→                  className={cn(
+   307→                    'mt-1 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+   308→                    activeChild && !open
+   309→                      ? 'text-foreground'
+   310→                      : 'text-foreground/75',
+   311→                  )}
+   312→                >
+   313→                  <g.icon
+   314→                    className={cn(
+   315→                      'h-4 w-4 shrink-0',
+   316→                      activeChild ? 'text-primary' : 'text-muted-foreground',
+   317→                    )}
+   318→                    aria-hidden="true"
+   319→                  />
+   320→                  <span className="flex-1 truncate text-left">{g.group}</span>
+   321→                  <ChevronDown
+   322→                    className={cn(
+   323→                      'h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200',
+   324→                      open && 'rotate-180',
+   325→                    )}
+   326→                    aria-hidden="true"
+   327→                  />
+   328→                </button>
+   329→                {open && (
+   330→                  <ul id={groupSlug(g.group)} className="ml-[26px] mt-0.5 space-y-0.5 border-l pl-2">
+   331→                    {g.items.map((item) => {
+   332→                      const active = current === item.key
+   333→                      return (
+   334→                        <li key={item.key}>
+   335→                          <button
+   336→                            type="button"
+   337→                            onClick={() => navigate(item.key)}
+   338→                            aria-current={active ? 'page' : undefined}
+   339→                            className={cn(
+   340→                              'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors',
+   341→                              active
+   342→                                ? 'bg-primary font-medium text-primary-foreground shadow-sm'
+   343→                                : 'text-foreground/80 hover:bg-accent hover:text-foreground',
+   344→                            )}
+   345→                          >
+   346→                            <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+   347→                            <span className="truncate">{item.label}</span>
+   348→                          </button>
+   349→                        </li>
+   350→                      )
+   351→                    })}
+   352→                  </ul>
+   353→                )}
+   354→              </div>
+   355→            )
+   356→          })}
+   357→        </nav>
+   358→      </ScrollArea>
+   359→      <div className="border-t px-4 py-3 text-[11px] text-muted-foreground">
+   360→        Rebuilt from dolibarr.org · v1.0
+   361→      </div>
+   362→    </div>
+   363→  )
+   364→}
+   365→
+   366→function AccountMenu({ user }: { user: SessionUser }) {
+   367→  const logout = useAuthStore((s) => s.logout)
+   368→  const [signingOut, setSigningOut] = useState(false)
+   369→  const can = (module: string) => canView(user.permissions, module)
+   370→
+   371→  async function handleSignOut() {
+   372→    if (signingOut) return
+   373→    setSigningOut(true)
+   374→    await logout()
+   375→    setSigningOut(false)
+   376→  }
+   377→
+   378→  return (
+   379→    <DropdownMenu>
+   380→      <DropdownMenuTrigger asChild>
+   381→        <button className="rounded-full outline-none ring-primary focus-visible:ring-2" aria-label="Account menu">
+   382→          <Avatar className="h-9 w-9">
+   383→            <AvatarFallback className="bg-primary/10 text-primary text-sm font-semibold">
+   384→              {userInitials(user.name)}
+   385→            </AvatarFallback>
+   386→          </Avatar>
+   387→        </button>
+   388→      </DropdownMenuTrigger>
+   389→      <DropdownMenuContent align="end" className="w-60">
+   390→        <DropdownMenuLabel className="font-normal">
+   391→          <div className="flex flex-col">
+   392→            <span className="text-sm font-semibold">{user.name}</span>
+   393→            <span className="truncate text-xs text-muted-foreground">{user.email}</span>
+   394→            <span className="mt-1 truncate text-[11px] text-muted-foreground">
+   395→              {user.role?.name ?? 'No role'} · {user.tenant.name}
+   396→            </span>
+   397→          </div>
+   398→        </DropdownMenuLabel>
+   399→        <DropdownMenuSeparator />
+   400→        {can('agenda') && (
+   401→          <DropdownMenuItem onClick={() => navigate('agenda')}>
+   402→            <CalendarDays className="h-4 w-4" aria-hidden="true" />
+   403→            My agenda
+   404→          </DropdownMenuItem>
+   405→        )}
+   406→        {can('employees') && (
+   407→          <DropdownMenuItem onClick={() => navigate('employees')}>
+   408→            <Users className="h-4 w-4" aria-hidden="true" />
+   409→            My HR space
+   410→          </DropdownMenuItem>
+   411→        )}
+   412→        {can('settings') && (
+   413→          <DropdownMenuItem onClick={() => navigate('settings')}>
+   414→            <SettingsIcon className="h-4 w-4" aria-hidden="true" />
+   415→            Settings
+   416→          </DropdownMenuItem>
+   417→        )}
+   418→        {can('administration') && (
+   419→          <DropdownMenuItem onClick={() => navigate('users')}>
+   420→            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+   421→            Users &amp; Roles
+   422→          </DropdownMenuItem>
+   423→        )}
+   424→        <DropdownMenuSeparator />
+   425→        <DropdownMenuItem
+   426→          disabled={signingOut}
+   427→          onClick={() => void handleSignOut()}
+   428→          aria-busy={signingOut}
+   429→        >
+   430→          {signingOut
+   431→            ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   432→            : <LogOut className="h-4 w-4" aria-hidden="true" />}
+   433→          {signingOut ? 'Signing out…' : 'Sign out'}
+   434→        </DropdownMenuItem>
+   435→      </DropdownMenuContent>
+   436→    </DropdownMenu>
+   437→  )
+   438→}
+   439→
+   440→function TopBar({
+   441→  user, nav, quickCreateItems, onOpenMobileNav,
+   442→}: {
+   443→  user: SessionUser
+   444→  nav: NavGroup[]
+   445→  quickCreateItems: { key: string; label: string }[]
+   446→  onOpenMobileNav: () => void
+   447→}) {
+   448→  const [query, setQuery] = useState('')
+   449→  const results = useMemo(() => {
+   450→    if (!query.trim()) return []
+   451→    const q = query.toLowerCase()
+   452→    return nav
+   453→      .flatMap((g) => g.items.filter((i) => i.label.toLowerCase().includes(q)).map((i) => i))
+   454→      .slice(0, 6)
+   455→  }, [query, nav])
+   456→
+   457→  return (
+   458→    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+   459→      <Button variant="ghost" size="icon" className="lg:hidden" onClick={onOpenMobileNav} aria-label="Open navigation">
+   460→        <Menu className="h-5 w-5" />
+   461→      </Button>
+   462→
+   463→      <div className="relative hidden sm:block w-72 md:w-80">
+   464→        <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+   465→        <Input
+   466→          value={query}
+   467→          onChange={(e) => setQuery(e.target.value)}
+   468→          placeholder="Search modules…"
+   469→          className="pl-8 h-9"
+   470→          aria-label="Search modules"
+   471→        />
+   472→        {results.length > 0 && (
+   473→          <div className="absolute top-full z-40 mt-1 w-full overflow-hidden rounded-md border bg-popover shadow-md">
+   474→            {results.map((r) => (
+   475→              <button
+   476→                key={r.key}
+   477→                className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-accent"
+   478→                onClick={() => { navigate(r.key); setQuery('') }}
+   479→              >
+   480→                <r.icon className="h-4 w-4 text-muted-foreground" />
+   481→                {r.label}
+   482→              </button>
+   483→            ))}
+   484→          </div>
+   485→        )}
+   486→      </div>
+   487→
+   488→      <div className="ml-auto flex items-center gap-2">
+   489→        {quickCreateItems.length > 0 && (
+   490→          <DropdownMenu>
+   491→            <DropdownMenuTrigger asChild>
+   492→              <Button size="sm" className="h-9 gap-1.5">
+   493→                <Plus className="h-4 w-4" />
+   494→                <span className="hidden sm:inline">Quick create</span>
+   495→              </Button>
+   496→            </DropdownMenuTrigger>
+   497→            <DropdownMenuContent align="end" className="w-52">
+   498→              <DropdownMenuLabel>New record</DropdownMenuLabel>
+   499→              <DropdownMenuSeparator />
+   500→              {quickCreateItems.map((item) => (
+   501→                <DropdownMenuItem key={item.key} onClick={() => navigate(item.key)}>
+   502→                  {item.label}
+   503→                </DropdownMenuItem>
+   504→              ))}
+   505→            </DropdownMenuContent>
+   506→          </DropdownMenu>
+   507→        )}
+   508→
+   509→        <AccountMenu user={user} />
+   510→      </div>
+   511→    </header>
+   512→  )
+   513→}
+   514→
+   515→function ModulePlaceholder({ current }: { current: string }) {
+   516→  const item = NAV.flatMap((g) => g.items).find((i) => i.key === current)
+   517→  return (
+   518→    <div className="rounded-lg border border-dashed p-10 text-center text-muted-foreground">
+   519→      <p className="font-medium text-foreground">{item?.label ?? current}</p>
+   520→      <p className="mt-1 text-sm">This module is being rebuilt — check back shortly.</p>
+   521→    </div>
+   522→  )
+   523→}
+   524→
+   525→/** Signed-in ERP shell (remounted per user via key={user.id} → fresh QueryClient) */
+   526→function ErpApp({ user }: { user: SessionUser }) {
+   527→  const nav = useMemo(() => filterNav(user), [user])
+   528→  const allowedKeys = useMemo(
+   529→    () => new Set(nav.flatMap((g) => g.items.map((i) => i.key))),
+   530→    [nav],
+   531→  )
+   532→  const route = useHashRoute(allowedKeys)
+   533→  const quickCreateItems = useMemo(
+   534→    () => QUICK_CREATE_ITEMS.filter((i) => canEdit(user.permissions, i.module)),
+   535→    [user],
+   536→  )
+   537→  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+   538→  const queryClient = useMemo(() => new QueryClient({
+   539→    defaultOptions: { queries: { staleTime: 15_000, retry: 1, refetchOnWindowFocus: false } },
+   540→  }), [])
+   541→  const View = MODULE_VIEWS[route]
+   542→
+   543→  return (
+   544→    <QueryClientProvider client={queryClient}>
+   545→      <div className="flex min-h-screen bg-muted/40">
+   546→          {/* Desktop sidebar */}
+   547→          <aside className="hidden lg:block w-60 shrink-0 border-r bg-background">
+   548→            <div className="sticky top-0 h-screen">
+   549→              <SidebarContent current={route} nav={nav} />
+   550→            </div>
+   551→          </aside>
+   552→
+   553→          {/* Mobile sidebar */}
+   554→          <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+   555→            <SheetTrigger asChild>
+   556→              <span className="hidden" aria-hidden="true" />
+   557→            </SheetTrigger>
+   558→            <SheetContent side="left" className="w-72 p-0">
+   559→              <SheetTitle className="sr-only">Navigation</SheetTitle>
+   560→              <SheetDescription className="sr-only">ERP module menu grouped by category</SheetDescription>
+   561→              <SidebarContent current={route} nav={nav} />
+   562→            </SheetContent>
+   563→          </Sheet>
+   564→
+   565→          {/* Main column */}
+   566→          <div className="flex min-w-0 flex-1 flex-col">
+   567→            <TopBar
+   568→              user={user}
+   569→              nav={nav}
+   570→              quickCreateItems={quickCreateItems}
+   571→              onOpenMobileNav={() => setMobileNavOpen(true)}
+   572→            />
+   573→            <main className="flex-1 px-4 py-5 sm:px-6 sm:py-6">
+   574→              <div className="mx-auto w-full max-w-7xl">
+   575→                {View ? <View /> : <ModulePlaceholder current={route} />}
+   576→              </div>
+   577→            </main>
+   578→            <footer className="mt-auto border-t bg-background px-4 py-3 text-center text-xs text-muted-foreground sm:px-6">
+   579→              DoliNext ERP &amp; CRM — an open rebuild of the Dolibarr feature set ·
+   580→              CRM · Sales · Purchasing · Stock · Finance · Projects · HR · Support
+   581→              {' · '}{user.tenant.name}
+   582→            </footer>
+   583→          </div>
+   584→        </div>
+   585→    </QueryClientProvider>
+   586→  )
+   587→}
+   588→
+   589→/** Centered splash while the session is being restored */
+   590→function Splash() {
+   591→  return (
+   592→    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background" role="status" aria-live="polite">
+   593→      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary font-black text-primary-foreground shadow-sm">
+   594→        DN
+   595→      </div>
+   596→      <div className="flex items-center gap-2 text-muted-foreground">
+   597→        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden="true" />
+   598→        <span className="text-sm">Loading your workspace…</span>
+   599→      </div>
+   600→    </div>
+   601→  )
+   602→}
+   603→
+   604→/**
+   605→ * Default export — the auth-aware root.
+   606→ * loading → splash · anon → AuthScreen · authed → ErpApp (fresh per user).
+   607→ */
+   608→export default function ErpRoot() {
+   609→  const status = useAuthStore((s) => s.status)
+   610→  const user = useAuthStore((s) => s.user)
+   611→  const init = useAuthStore((s) => s.init)
+   612→  const forceSignOut = useAuthStore((s) => s.forceSignOut)
+   613→
+   614→  // Restore the session once on mount
+   615→  useEffect(() => {
+   616→    void init()
+   617→  }, [init])
+   618→
+   619→  // Session watchdog: immediate check + every 60s + on focus/visibility.
+   620→  // Silent while authed — only a 401 drops the local session.
+   621→  useEffect(() => {
+   622→    if (status !== 'authed') return
+   623→    let alive = true
+   624→    const check = async () => {
+   625→      try {
+   626→        const res = await fetch('/api/auth/me', {
+   627→          credentials: 'same-origin',
+   628→          cache: 'no-store',
+   629→          headers: authHeaders(),
+   630→        })
+   631→        if (alive && res.status === 401) {
+   632→          forceSignOut()
+   633→          window.location.hash = '#/dashboard'
+   634→        }
+   635→      } catch {
+   636→        // network hiccup — keep the current session state
+   637→      }
+   638→    }
+   639→    void check()
+   640→    const id = window.setInterval(() => { void check() }, 60_000)
+   641→    const onVisible = () => {
+   642→      if (document.visibilityState === 'visible') void check()
+   643→    }
+   644→    window.addEventListener('focus', onVisible)
+   645→    document.addEventListener('visibilitychange', onVisible)
+   646→    return () => {
+   647→      alive = false
+   648→      window.clearInterval(id)
+   649→      window.removeEventListener('focus', onVisible)
+   650→      document.removeEventListener('visibilitychange', onVisible)
+   651→    }
+   652→  }, [status, forceSignOut])
+   653→
+   654→  if (status === 'loading') return <Splash />
+   655→  if (status === 'anon' || !user) return <AuthScreen />
+   656→  return <ErpApp key={user.id} user={user} />
+   657→}
+   658→

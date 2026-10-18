@@ -38,6 +38,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { module: 'data', label: 'Import / Export', group: 'Administration' },
   { module: 'settings', label: 'Settings & templates', group: 'Administration' },
   { module: 'administration', label: 'Users & roles', group: 'Administration' },
+  { module: 'coffee', label: 'Buy me a coffee page', group: 'Administration' },
 ]
 
 export function perm(module: string, action: PermissionAction): string {
