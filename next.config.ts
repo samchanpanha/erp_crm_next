@@ -5,6 +5,18 @@ const nextConfig: NextConfig = {
   output: "standalone",
   /* Keep heavy native-ish CJS deps out of the bundler (used by API routes only) */
   serverExternalPackages: ["exceljs"],
+  experimental: {
+    optimizePackageImports: ["lucide-react", "date-fns"],
+    outputFileTracingExcludes: {
+      '*': [
+        '@prisma/engines/**',
+        '**/node_modules/@prisma/engines/**',
+        '**/node_modules/@swc/**',
+        '**/node_modules/canvas/**',
+        '**/node_modules/puppeteer/**',
+      ],
+    },
+  },
   typescript: {
     ignoreBuildErrors: true,
   },
