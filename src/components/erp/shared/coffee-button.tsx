@@ -3,23 +3,23 @@
 /**
  * "Buy me a coffee" — top-bar quick access beside Quick create.
  *
- * Opens a dialog that loads the app's STATIC KHQR payment image (one fixed
- * file on the server, public/coffee/khqr.<ext>) and explains how to scan it.
- * Only the super administrator ("*" wildcard) can upload/replace/remove the
- * image; everyone else sees the QR and the scan instructions.
+ * Opens a dialog that loads the app's KHQR payment image (a MANUAL image URL
+ * set by the super administrator — no upload) and explains how to scan it.
+ * Only the super administrator ("*" wildcard) can set/remove the URL; everyone
+ * else sees the QR and the scan instructions.
  */
 
 import { useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Coffee, Download, ImagePlus, Loader2, QrCode, ScanLine, ShieldCheck, Trash2,
+  Coffee, Download, Link2, Loader2, QrCode, ScanLine, ShieldCheck, Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { SessionUser } from '@/lib/auth-store'
 import { isSuperAdmin } from '@/lib/permissions'
 import { fetchApi } from '@/components/erp/lib/api'
-import { authHeaders } from '@/components/erp/lib/session-token'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger,
 } from '@/components/ui/dialog'
@@ -29,30 +29,17 @@ interface KhqrInfo {
 }
 
 function fetchKhqr(): Promise<KhqrInfo> {
-  return fetchApi<KhqrInfo>('/api/coffee/static-image')
+  return fetchApi<KhqrInfo>('/api/coffee/image-url')
 }
 
-async function uploadKhqr(file: File): Promise<string> {
-  const form = new FormData()
-  form.append('file', file)
-  // Plain fetch (no Content-Type header) so the browser sets the multipart boundary.
-  const res = await fetch('/api/coffee/static-image', {
-    method: 'POST',
-    headers: authHeaders(),
-    body: form,
+function saveKhqrUrl(url: string | null): Promise<KhqrInfo> {
+  return fetchApi<KhqrInfo>('/api/coffee/image-url', {
+    method: 'PUT',
+    body: JSON.stringify({ url }),
   })
-  const json = (await res.json().catch(() => ({}))) as { error?: string; data?: { khqrUrl?: string } }
-  if (!res.ok || !json.data?.khqrUrl) {
-    throw new Error(json.error ?? `Upload failed (${res.status})`)
-  }
-  return json.data.khqrUrl
 }
 
-function removeKhqr(): Promise<KhqrInfo> {
-  return fetchApi<KhqrInfo>('/api/coffee/static-image', { method: 'DELETE' })
-}
-
-/** fetch → blob anchor: works inside the cross-site preview iframe, unlike plain download links. */
+/** fetch → blob anchor: works inside the cross-site preview iframe for same-origin images. */
 async function downloadKhqr(url: string) {
   try {
     const res = await fetch(url)
@@ -60,14 +47,14 @@ async function downloadKhqr(url: string) {
     const blob = await res.blob()
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
-    const ext = url.split('?')[0].split('.').pop() ?? 'png'
+    const ext = (url.split('?')[0].split('.').pop() ?? 'png').slice(0, 5)
     a.download = `khqr-buy-me-a-coffee.${ext}`
     document.body.appendChild(a)
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(a.href), 5000)
   } catch {
-    toast.error('Could not download the QR image')
+    toast.error('Could not download the image (cross-origin URLs may block downloads)')
   }
 }
 
@@ -91,42 +78,27 @@ const SCAN_STEPS = [
 
 export function CoffeeQuickButton({ user }: { user: SessionUser }) {
   const [open, setOpen] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [removing, setRemoving] = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const [saving, setSaving] = useState(false)
+  const urlRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
-  const mayUpload = isSuperAdmin(user.permissions)
+  const mayManage = isSuperAdmin(user.permissions)
 
   const q = useQuery({ queryKey: ['coffee-khqr'], queryFn: fetchKhqr, enabled: open })
-
-  async function handleFile(file: File) {
-    setUploading(true)
-    try {
-      const khqrUrl = await uploadKhqr(file)
-      queryClient.setQueryData<KhqrInfo>(['coffee-khqr'], { khqrUrl })
-      toast.success('KHQR image saved')
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to upload the KHQR image')
-    } finally {
-      setUploading(false)
-      if (fileRef.current) fileRef.current.value = ''
-    }
-  }
-
-  async function handleRemove() {
-    setRemoving(true)
-    try {
-      await removeKhqr()
-      queryClient.setQueryData<KhqrInfo>(['coffee-khqr'], { khqrUrl: null })
-      toast.success('KHQR image removed')
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove the KHQR image')
-    } finally {
-      setRemoving(false)
-    }
-  }
-
   const khqrUrl = q.data?.khqrUrl ?? null
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      const url = urlRef.current?.value.trim() || null
+      const data = await saveKhqrUrl(url)
+      queryClient.setQueryData<KhqrInfo>(['coffee-khqr'], data)
+      toast.success(url ? 'KHQR image URL saved' : 'KHQR image URL removed')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save the KHQR image URL')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -173,6 +145,8 @@ export function CoffeeQuickButton({ user }: { user: SessionUser }) {
                   src={khqrUrl}
                   alt="KHQR payment QR code — scan to buy me a coffee"
                   className="h-44 w-44 object-contain"
+                  onError={(e) => { e.currentTarget.style.opacity = '0.25' }}
+                  onLoad={(e) => { e.currentTarget.style.opacity = '1' }}
                 />
               </div>
               <Button
@@ -207,91 +181,74 @@ export function CoffeeQuickButton({ user }: { user: SessionUser }) {
                 ))}
               </ol>
             </div>
-
-            {/* Super-admin image management */}
-            {mayUpload && (
-              <div className="flex items-center gap-2 border-t pt-3">
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  className="hidden"
-                  aria-label="Upload KHQR image"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) void handleFile(file)
-                  }}
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5"
-                  disabled={uploading || removing}
-                  onClick={() => fileRef.current?.click()}
-                >
-                  {uploading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <ImagePlus className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  Replace image
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1.5 text-destructive hover:text-destructive"
-                  disabled={uploading || removing}
-                  onClick={() => void handleRemove()}
-                >
-                  {removing ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  Remove
-                </Button>
-                <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-                  <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                  Super admin
-                </span>
-              </div>
-            )}
           </div>
         ) : (
-          /* Empty state — no image uploaded yet */
+          /* Empty state — no image URL set yet */
           <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed py-8 text-center">
             <span className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-500/15">
               <Coffee className="h-6 w-6 text-amber-600 dark:text-amber-400" aria-hidden="true" />
             </span>
             <p className="text-sm font-medium">No KHQR image yet</p>
             <p className="max-w-[300px] text-xs text-muted-foreground">
-              {mayUpload
-                ? 'Upload your KHQR payment code (PNG, JPEG or WebP, up to 2 MB) — it will appear here for everyone to scan.'
+              {mayManage
+                ? 'Paste your KHQR payment image URL below — it will appear here for everyone to scan.'
                 : 'The payment code will appear here once the super administrator adds it.'}
             </p>
-            {mayUpload && (
-              <>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  className="hidden"
-                  aria-label="Upload KHQR image"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) void handleFile(file)
+          </div>
+        )}
+
+        {/* Super-admin URL management */}
+        {mayManage && (
+          <div className="space-y-2 border-t pt-3">
+            <div className="flex items-center justify-between">
+              <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+                Image URL
+              </p>
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                Super admin
+              </span>
+            </div>
+            <div className="flex gap-2">
+              {/* key remounts the input when the stored URL changes, keeping defaultValue in sync */}
+              <Input
+                key={khqrUrl ?? 'none'}
+                ref={urlRef}
+                defaultValue={khqrUrl ?? ''}
+                placeholder="https://example.com/khqr.png"
+                inputMode="url"
+                aria-label="KHQR image URL"
+                className="h-9 flex-1"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void handleSave()
+                  }
+                }}
+              />
+              <Button size="sm" className="h-9" disabled={saving} onClick={() => void handleSave()}>
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : 'Save'}
+              </Button>
+              {khqrUrl && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 text-destructive hover:text-destructive"
+                  disabled={saving}
+                  aria-label="Remove KHQR image URL"
+                  onClick={() => {
+                    if (urlRef.current) urlRef.current.value = ''
+                    void handleSave()
                   }}
-                />
-                <Button size="sm" className="gap-1.5" disabled={uploading} onClick={() => fileRef.current?.click()}>
-                  {uploading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <ImagePlus className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  {uploading ? 'Uploading…' : 'Upload KHQR image'}
+                >
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Trash2 className="h-4 w-4" aria-hidden="true" />}
                 </Button>
-              </>
-            )}
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Paste a direct image URL (https://…) or a path to a file dropped into /public (e.g. /khqr.png).
+            </p>
           </div>
         )}
       </DialogContent>

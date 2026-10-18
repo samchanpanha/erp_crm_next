@@ -1,0 +1,666 @@
+     1→'use client'
+     2→
+     3→import { useMemo, useState } from 'react'
+     4→import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+     5→import {
+     6→  Package, Wrench, Plus, Search, Pencil, Trash2, TriangleAlert, Wallet, Loader2, Boxes,
+     7→} from 'lucide-react'
+     8→import { Card, CardContent } from '@/components/ui/card'
+     9→import { Button } from '@/components/ui/button'
+    10→import { Input } from '@/components/ui/input'
+    11→import { Label } from '@/components/ui/label'
+    12→import { Textarea } from '@/components/ui/textarea'
+    13→import { Switch } from '@/components/ui/switch'
+    14→import { Skeleton } from '@/components/ui/skeleton'
+    15→import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+    16→import {
+    17→  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    18→} from '@/components/ui/dialog'
+    19→import {
+    20→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    21→} from '@/components/ui/select'
+    22→import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+    23→import {
+    24→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    25→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    26→} from '@/components/ui/alert-dialog'
+    27→import { useToast } from '@/hooks/use-toast'
+    28→import { get, post, put, del } from '@/components/erp/lib/api'
+    29→import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
+    30→import { ImportExportButtons } from '@/components/erp/shared/import-export'
+    31→import { StatusBadge, DocStatusBadge } from '@/components/erp/shared/status-badge'
+    32→import { StatCard } from '@/components/erp/shared/stat-card'
+    33→import { formatMoney, formatNumber } from '@/components/erp/shared/format'
+    34→import { cn } from '@/lib/utils'
+    35→
+    36→interface ProductRow {
+    37→  id: string
+    38→  ref: string
+    39→  label: string
+    40→  description: string | null
+    41→  type: string // PRODUCT | SERVICE
+    42→  sellPrice: number
+    43→  costPrice: number
+    44→  vatRate: number
+    45→  unit: string
+    46→  barcode: string | null
+    47→  manageStock: boolean
+    48→  stockQty: number
+    49→  minStock: number
+    50→  status: string // ACTIVE | SUSPENDED
+    51→  createdAt: string
+    52→  updatedAt: string
+    53→  _count: { stockMovements: number }
+    54→}
+    55→
+    56→type ProductType = 'PRODUCT' | 'SERVICE'
+    57→type ProductStatus = 'ACTIVE' | 'SUSPENDED'
+    58→type TabKey = 'all' | 'products' | 'services' | 'low'
+    59→
+    60→interface ProductForm {
+    61→  label: string
+    62→  type: ProductType
+    63→  description: string
+    64→  sellPrice: string
+    65→  costPrice: string
+    66→  vatRate: string
+    67→  unit: string
+    68→  barcode: string
+    69→  manageStock: boolean
+    70→  stockQty: string
+    71→  minStock: string
+    72→  status: ProductStatus
+    73→}
+    74→
+    75→const EMPTY_FORM: ProductForm = {
+    76→  label: '',
+    77→  type: 'PRODUCT',
+    78→  description: '',
+    79→  sellPrice: '',
+    80→  costPrice: '',
+    81→  vatRate: '20',
+    82→  unit: 'unit',
+    83→  barcode: '',
+    84→  manageStock: true,
+    85→  stockQty: '0',
+    86→  minStock: '0',
+    87→  status: 'ACTIVE',
+    88→}
+    89→
+    90→const VAT_RATES = [0, 5, 10, 20]
+    91→
+    92→/** Margin % for products with a real cost; null renders as "—" */
+    93→function marginPct(p: ProductRow): number | null {
+    94→  if (p.type !== 'PRODUCT' || p.costPrice <= 0 || p.sellPrice <= 0) return null
+    95→  return ((p.sellPrice - p.costPrice) / p.sellPrice) * 100
+    96→}
+    97→
+    98→export default function ProductsModule() {
+    99→  const { toast } = useToast()
+   100→  const qc = useQueryClient()
+   101→
+   102→  const [search, setSearch] = useState('')
+   103→  const [tab, setTab] = useState<TabKey>('all')
+   104→  const [dialogOpen, setDialogOpen] = useState(false)
+   105→  const [editing, setEditing] = useState<ProductRow | null>(null)
+   106→  const [form, setForm] = useState<ProductForm>(EMPTY_FORM)
+   107→  const [formError, setFormError] = useState<string | null>(null)
+   108→  const [deleteTarget, setDeleteTarget] = useState<ProductRow | null>(null)
+   109→
+   110→  const productsQuery = useQuery<ProductRow[]>({
+   111→    queryKey: ['products'],
+   112→    queryFn: () => get<ProductRow[]>('/api/products'),
+   113→  })
+   114→  const products = useMemo(() => productsQuery.data ?? [], [productsQuery.data])
+   115→
+   116→  // ---- Stats are always computed over the FULL catalog (not the filtered view)
+   117→  const stats = useMemo(() => {
+   118→    const totalProducts = products.filter((p) => p.type === 'PRODUCT').length
+   119→    const services = products.filter((p) => p.type === 'SERVICE').length
+   120→    const stockValue = products
+   121→      .filter((p) => p.manageStock && p.type === 'PRODUCT')
+   122→      .reduce((s, p) => s + p.stockQty * p.costPrice, 0)
+   123→    const lowStock = products.filter(
+   124→      (p) => p.type === 'PRODUCT' && p.manageStock && p.stockQty <= p.minStock,
+   125→    ).length
+   126→    return { totalProducts, services, stockValue, lowStock }
+   127→  }, [products])
+   128→
+   129→  // ---- Client-side filtering (tabs + search)
+   130→  const filtered = useMemo(() => {
+   131→    const q = search.trim().toLowerCase()
+   132→    return products.filter((p) => {
+   133→      if (tab === 'products' && p.type !== 'PRODUCT') return false
+   134→      if (tab === 'services' && p.type !== 'SERVICE') return false
+   135→      if (tab === 'low' && !(p.type === 'PRODUCT' && p.manageStock && p.stockQty <= p.minStock)) return false
+   136→      if (q && !`${p.ref} ${p.label}`.toLowerCase().includes(q)) return false
+   137→      return true
+   138→    })
+   139→  }, [products, tab, search])
+   140→
+   141→  // ---- Mutations
+   142→  const saveMutation = useMutation({
+   143→    mutationFn: async () => {
+   144→      const payload: Record<string, unknown> = {
+   145→        label: form.label.trim(),
+   146→        type: form.type,
+   147→        description: form.description.trim() || null,
+   148→        sellPrice: Number(form.sellPrice) || 0,
+   149→        costPrice: Number(form.costPrice) || 0,
+   150→        vatRate: Number(form.vatRate) || 0,
+   151→        unit: form.unit.trim() || 'unit',
+   152→        barcode: form.barcode.trim() || null,
+   153→        manageStock: form.type === 'SERVICE' ? false : form.manageStock,
+   154→        minStock: form.type !== 'SERVICE' && form.manageStock
+   155→          ? Math.max(0, Math.round(Number(form.minStock) || 0))
+   156→          : 0,
+   157→        status: form.status,
+   158→      }
+   159→      // initial stock is set on CREATE only; edits go through stock movements
+   160→      if (!editing && form.type !== 'SERVICE' && form.manageStock) {
+   161→        payload.stockQty = Math.max(0, Math.round(Number(form.stockQty) || 0))
+   162→      }
+   163→      return editing
+   164→        ? put<ProductRow>(`/api/products/${editing.id}`, payload)
+   165→        : post<ProductRow>('/api/products', payload)
+   166→    },
+   167→    onSuccess: (p) => {
+   168→      qc.invalidateQueries({ queryKey: ['products'] })
+   169→      qc.invalidateQueries({ queryKey: ['stock-movements'] })
+   170→      qc.invalidateQueries({ queryKey: ['warehouses'] })
+   171→      qc.invalidateQueries({ queryKey: ['dashboard'] })
+   172→      toast({
+   173→        title: editing ? 'Product updated' : 'Product created',
+   174→        description: `${p.ref} — ${p.label}`,
+   175→      })
+   176→      setDialogOpen(false)
+   177→    },
+   178→    onError: (e) => toast({ title: 'Error', description: (e as Error).message, variant: 'destructive' }),
+   179→  })
+   180→
+   181→  const deleteMutation = useMutation({
+   182→    mutationFn: (id: string) => del<{ ok: boolean }>(`/api/products/${id}`),
+   183→    onSuccess: () => {
+   184→      qc.invalidateQueries({ queryKey: ['products'] })
+   185→      qc.invalidateQueries({ queryKey: ['stock-movements'] })
+   186→      qc.invalidateQueries({ queryKey: ['dashboard'] })
+   187→      toast({ title: 'Product deleted' })
+   188→      setDeleteTarget(null)
+   189→    },
+   190→    onError: (e) => {
+   191→      toast({ title: 'Cannot delete', description: (e as Error).message, variant: 'destructive' })
+   192→      setDeleteTarget(null)
+   193→    },
+   194→  })
+   195→
+   196→  const openCreate = () => {
+   197→    setEditing(null)
+   198→    setForm(EMPTY_FORM)
+   199→    setFormError(null)
+   200→    setDialogOpen(true)
+   201→  }
+   202→
+   203→  const openEdit = (p: ProductRow) => {
+   204→    setEditing(p)
+   205→    setForm({
+   206→      label: p.label,
+   207→      type: p.type as ProductType,
+   208→      description: p.description ?? '',
+   209→      sellPrice: String(p.sellPrice),
+   210→      costPrice: String(p.costPrice),
+   211→      vatRate: String(p.vatRate),
+   212→      unit: p.unit,
+   213→      barcode: p.barcode ?? '',
+   214→      manageStock: p.manageStock,
+   215→      stockQty: String(p.stockQty),
+   216→      minStock: String(p.minStock),
+   217→      status: p.status as ProductStatus,
+   218→    })
+   219→    setFormError(null)
+   220→    setDialogOpen(true)
+   221→  }
+   222→
+   223→  const submit = () => {
+   224→    if (!form.label.trim()) {
+   225→      setFormError('Label is required')
+   226→      return
+   227→    }
+   228→    if (form.sellPrice === '' || Number.isNaN(Number(form.sellPrice)) || Number(form.sellPrice) < 0) {
+   229→      setFormError('Selling price must be a number ≥ 0')
+   230→      return
+   231→    }
+   232→    setFormError(null)
+   233→    saveMutation.mutate()
+   234→  }
+   235→
+   236→  const set = <K extends keyof ProductForm>(key: K, value: ProductForm[K]) =>
+   237→    setForm((f) => ({ ...f, [key]: value }))
+   238→
+   239→  const isService = form.type === 'SERVICE'
+   240→  const trackStock = !isService && form.manageStock
+   241→
+   242→  return (
+   243→    <div className="space-y-6">
+   244→      <PageHeader
+   245→        icon={Package}
+   246→        title="Products & Services"
+   247→        description="Catalog, pricing and stock levels"
+   248→        actions={
+   249→          <>
+   250→            <ImportExportButtons entity="products" queryKeysToInvalidate={[['products']]} />
+   251→            <Button onClick={openCreate} className="min-h-11">
+   252→              <Plus className="mr-1.5 h-4 w-4" /> New product
+   253→            </Button>
+   254→          </>
+   255→        }
+   256→      />
+   257→
+   258→      {/* Stats */}
+   259→      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+   260→        {productsQuery.isLoading ? (
+   261→          Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-[104px] rounded-xl" />)
+   262→        ) : (
+   263→          <>
+   264→            <StatCard title="Products" value={stats.totalProducts} hint="Physical items in catalog" icon={Boxes} />
+   265→            <StatCard title="Services" value={stats.services} hint="Non-stock catalog items" icon={Wrench} />
+   266→            <StatCard title="Stock value (cost)" value={stats.stockValue} isMoney hint="Σ stock qty × cost price" icon={Wallet} />
+   267→            <StatCard
+   268→              title="Low stock"
+   269→              value={stats.lowStock}
+   270→              hint="At or below minimum"
+   271→              icon={TriangleAlert}
+   272→              tone={stats.lowStock > 0 ? 'danger' : 'default'}
+   273→            />
+   274→          </>
+   275→        )}
+   276→      </div>
+   277→
+   278→      {/* Toolbar */}
+   279→      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+   280→        <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)}>
+   281→          <TabsList>
+   282→            <TabsTrigger value="all">All</TabsTrigger>
+   283→            <TabsTrigger value="products">Products</TabsTrigger>
+   284→            <TabsTrigger value="services">Services</TabsTrigger>
+   285→            <TabsTrigger value="low" className="gap-1.5">
+   286→              Low stock
+   287→              {stats.lowStock > 0 && (
+   288→                <span className="rounded-full bg-rose-100 px-1.5 text-xs font-semibold text-rose-700">
+   289→                  {stats.lowStock}
+   290→                </span>
+   291→              )}
+   292→            </TabsTrigger>
+   293→          </TabsList>
+   294→        </Tabs>
+   295→        <div className="relative w-full lg:max-w-xs">
+   296→          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+   297→          <Input
+   298→            value={search}
+   299→            onChange={(e) => setSearch(e.target.value)}
+   300→            placeholder="Search ref or label…"
+   301→            className="pl-9"
+   302→            aria-label="Search products"
+   303→          />
+   304→        </div>
+   305→      </div>
+   306→
+   307→      {/* Table */}
+   308→      <Card className="py-0 gap-0">
+   309→        <CardContent className="p-0">
+   310→          {productsQuery.isLoading ? (
+   311→            <div className="space-y-2 p-4">
+   312→              {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
+   313→            </div>
+   314→          ) : productsQuery.isError ? (
+   315→            <p className="p-6 text-sm text-rose-600">Failed to load products: {(productsQuery.error as Error).message}</p>
+   316→          ) : filtered.length === 0 ? (
+   317→            <div className="p-6">
+   318→              <EmptyState
+   319→                icon={Package}
+   320→                title={search || tab !== 'all' ? 'No products match your filters' : 'No products yet'}
+   321→                description={
+   322→                  search || tab !== 'all'
+   323→                    ? 'Try a different search term or tab.'
+   324→                    : 'Add your first product or service to the catalog.'
+   325→                }
+   326→                actionLabel={search || tab !== 'all' ? undefined : 'New product'}
+   327→                onAction={openCreate}
+   328→              />
+   329→            </div>
+   330→          ) : (
+   331→            <div className="overflow-x-auto">
+   332→              <Table>
+   333→                <TableHeader>
+   334→                  <TableRow>
+   335→                    <TableHead>Ref</TableHead>
+   336→                    <TableHead>Label</TableHead>
+   337→                    <TableHead>Type</TableHead>
+   338→                    <TableHead className="text-right">Sell price</TableHead>
+   339→                    <TableHead className="text-right">Cost</TableHead>
+   340→                    <TableHead className="text-right">Margin</TableHead>
+   341→                    <TableHead className="text-right">VAT</TableHead>
+   342→                    <TableHead className="text-right">Stock</TableHead>
+   343→                    <TableHead>Status</TableHead>
+   344→                    <TableHead className="w-24 text-right">Actions</TableHead>
+   345→                  </TableRow>
+   346→                </TableHeader>
+   347→                <TableBody>
+   348→                  {filtered.map((p) => {
+   349→                    const m = marginPct(p)
+   350→                    return (
+   351→                      <TableRow key={p.id} className="group">
+   352→                        <TableCell className="whitespace-nowrap font-mono text-xs font-medium">{p.ref}</TableCell>
+   353→                        <TableCell className="max-w-[260px]">
+   354→                          <p className="truncate font-medium">{p.label}</p>
+   355→                          {p.description && (
+   356→                            <p className="truncate text-xs text-muted-foreground">{p.description}</p>
+   357→                          )}
+   358→                        </TableCell>
+   359→                        <TableCell>
+   360→                          {p.type === 'SERVICE'
+   361→                            ? <StatusBadge label="Service" tone="info" />
+   362→                            : <StatusBadge label="Product" tone="neutral" />}
+   363→                        </TableCell>
+   364→                        <TableCell className="text-right tabular-nums">{formatMoney(p.sellPrice)}</TableCell>
+   365→                        <TableCell className="text-right tabular-nums text-muted-foreground">
+   366→                          {formatMoney(p.costPrice)}
+   367→                        </TableCell>
+   368→                        <TableCell className="text-right">
+   369→                          {m === null ? (
+   370→                            <span className="text-muted-foreground">—</span>
+   371→                          ) : (
+   372→                            <span className={cn(
+   373→                              'font-medium tabular-nums',
+   374→                              m > 20 ? 'text-emerald-600' : m >= 0 ? 'text-amber-600' : 'text-rose-600',
+   375→                            )}>
+   376→                              {m.toFixed(1)}%
+   377→                            </span>
+   378→                          )}
+   379→                        </TableCell>
+   380→                        <TableCell className="text-right tabular-nums">{formatNumber(p.vatRate)}%</TableCell>
+   381→                        <TableCell className="text-right">
+   382→                          {p.type === 'PRODUCT' && p.manageStock ? (
+   383→                            <span className="inline-flex items-center gap-1.5">
+   384→                              <span className="tabular-nums">{p.stockQty} {p.unit}</span>
+   385→                              {p.stockQty <= p.minStock && (
+   386→                                <span className="rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-rose-700">
+   387→                                  Low
+   388→                                </span>
+   389→                              )}
+   390→                            </span>
+   391→                          ) : (
+   392→                            <span className="text-muted-foreground">—</span>
+   393→                          )}
+   394→                        </TableCell>
+   395→                        <TableCell><DocStatusBadge status={p.status} /></TableCell>
+   396→                        <TableCell className="text-right">
+   397→                          <div className="flex justify-end gap-1">
+   398→                            <Button
+   399→                              variant="ghost"
+   400→                              size="icon"
+   401→                              className="h-8 w-8"
+   402→                              onClick={() => openEdit(p)}
+   403→                              aria-label={`Edit ${p.label}`}
+   404→                            >
+   405→                              <Pencil className="h-4 w-4" />
+   406→                            </Button>
+   407→                            <Button
+   408→                              variant="ghost"
+   409→                              size="icon"
+   410→                              className="h-8 w-8 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+   411→                              onClick={() => setDeleteTarget(p)}
+   412→                              aria-label={`Delete ${p.label}`}
+   413→                            >
+   414→                              <Trash2 className="h-4 w-4" />
+   415→                            </Button>
+   416→                          </div>
+   417→                        </TableCell>
+   418→                      </TableRow>
+   419→                    )
+   420→                  })}
+   421→                </TableBody>
+   422→              </Table>
+   423→            </div>
+   424→          )}
+   425→        </CardContent>
+   426→      </Card>
+   427→
+   428→      {/* Create / Edit dialog */}
+   429→      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+   430→        <DialogContent className="sm:max-w-xl">
+   431→          <DialogHeader>
+   432→            <DialogTitle>{editing ? 'Edit product' : 'New product or service'}</DialogTitle>
+   433→            <DialogDescription>
+   434→              {editing
+   435→                ? `Update catalog data for ${editing.ref}. Stock changes are made via stock movements.`
+   436→                : 'The reference is generated automatically (PD…).'}
+   437→            </DialogDescription>
+   438→          </DialogHeader>
+   439→
+   440→          <div className="max-h-[70vh] overflow-y-auto pr-1">
+   441→            <div className="grid gap-4 py-2">
+   442→              <div className="grid gap-2">
+   443→                <Label htmlFor="p-label">Label *</Label>
+   444→                <Input
+   445→                  id="p-label"
+   446→                  value={form.label}
+   447→                  onChange={(e) => set('label', e.target.value)}
+   448→                  placeholder="e.g. Industrial Sensor Unit IS-200"
+   449→                />
+   450→              </div>
+   451→
+   452→              <div className="grid gap-4 sm:grid-cols-2">
+   453→                <div className="grid gap-2">
+   454→                  <Label>Type</Label>
+   455→                  <Select
+   456→                    value={form.type}
+   457→                    onValueChange={(v) => set('type', v as ProductType)}
+   458→                    disabled={!!editing}
+   459→                  >
+   460→                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+   461→                    <SelectContent>
+   462→                      <SelectItem value="PRODUCT">Product (stocked)</SelectItem>
+   463→                      <SelectItem value="SERVICE">Service</SelectItem>
+   464→                    </SelectContent>
+   465→                  </Select>
+   466→                </div>
+   467→                <div className="grid gap-2">
+   468→                  <Label>Status</Label>
+   469→                  <Select value={form.status} onValueChange={(v) => set('status', v as ProductStatus)}>
+   470→                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+   471→                    <SelectContent>
+   472→                      <SelectItem value="ACTIVE">Active</SelectItem>
+   473→                      <SelectItem value="SUSPENDED">Suspended</SelectItem>
+   474→                    </SelectContent>
+   475→                  </Select>
+   476→                </div>
+   477→              </div>
+   478→
+   479→              <div className="grid gap-2">
+   480→                <Label htmlFor="p-desc">Description</Label>
+   481→                <Textarea
+   482→                  id="p-desc"
+   483→                  rows={2}
+   484→                  value={form.description}
+   485→                  onChange={(e) => set('description', e.target.value)}
+   486→                  placeholder="Optional internal description"
+   487→                />
+   488→              </div>
+   489→
+   490→              <div className="grid gap-4 sm:grid-cols-2">
+   491→                <div className="grid gap-2">
+   492→                  <Label htmlFor="p-sell">Selling price *</Label>
+   493→                  <Input
+   494→                    id="p-sell"
+   495→                    type="number"
+   496→                    min="0"
+   497→                    step="0.01"
+   498→                    value={form.sellPrice}
+   499→                    onChange={(e) => set('sellPrice', e.target.value)}
+   500→                    placeholder="0.00"
+   501→                  />
+   502→                </div>
+   503→                <div className="grid gap-2">
+   504→                  <Label htmlFor="p-cost">Cost price</Label>
+   505→                  <Input
+   506→                    id="p-cost"
+   507→                    type="number"
+   508→                    min="0"
+   509→                    step="0.01"
+   510→                    value={form.costPrice}
+   511→                    onChange={(e) => set('costPrice', e.target.value)}
+   512→                    placeholder="0.00"
+   513→                  />
+   514→                </div>
+   515→              </div>
+   516→
+   517→              <div className="grid gap-4 sm:grid-cols-2">
+   518→                <div className="grid gap-2">
+   519→                  <Label>VAT rate</Label>
+   520→                  <Select value={form.vatRate} onValueChange={(v) => set('vatRate', v)}>
+   521→                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+   522→                    <SelectContent>
+   523→                      {VAT_RATES.map((r) => (
+   524→                        <SelectItem key={r} value={String(r)}>{r}%</SelectItem>
+   525→                      ))}
+   526→                    </SelectContent>
+   527→                  </Select>
+   528→                </div>
+   529→                <div className="grid gap-2">
+   530→                  <Label htmlFor="p-unit">Unit</Label>
+   531→                  <Input
+   532→                    id="p-unit"
+   533→                    value={form.unit}
+   534→                    onChange={(e) => set('unit', e.target.value)}
+   535→                    placeholder="unit, kg, hour…"
+   536→                  />
+   537→                </div>
+   538→              </div>
+   539→
+   540→              <div className="grid gap-2">
+   541→                <Label htmlFor="p-barcode">Barcode</Label>
+   542→                <Input
+   543→                  id="p-barcode"
+   544→                  value={form.barcode}
+   545→                  onChange={(e) => set('barcode', e.target.value)}
+   546→                  placeholder="EAN / SKU"
+   547→                />
+   548→              </div>
+   549→
+   550→              <div className="flex items-center justify-between rounded-lg border p-3">
+   551→                <div className="pr-3">
+   552→                  <Label htmlFor="p-stock" className="text-sm font-medium">Manage stock</Label>
+   553→                  <p className="text-xs text-muted-foreground">
+   554→                    {isService
+   555→                      ? 'Services cannot track stock.'
+   556→                      : 'Track quantity on hand and receive low-stock alerts.'}
+   557→                  </p>
+   558→                </div>
+   559→                <Switch
+   560→                  id="p-stock"
+   561→                  checked={trackStock}
+   562→                  disabled={isService}
+   563→                  onCheckedChange={(v) => set('manageStock', v)}
+   564→                />
+   565→              </div>
+   566→
+   567→              {trackStock && !editing && (
+   568→                <div className="grid gap-4 sm:grid-cols-2">
+   569→                  <div className="grid gap-2">
+   570→                    <Label htmlFor="p-qty">Initial stock qty</Label>
+   571→                    <Input
+   572→                      id="p-qty"
+   573→                      type="number"
+   574→                      min="0"
+   575→                      step="1"
+   576→                      value={form.stockQty}
+   577→                      onChange={(e) => set('stockQty', e.target.value)}
+   578→                    />
+   579→                    <p className="text-xs text-muted-foreground">Recorded as an initial stock-in movement.</p>
+   580→                  </div>
+   581→                  <div className="grid gap-2">
+   582→                    <Label htmlFor="p-min">Minimum stock</Label>
+   583→                    <Input
+   584→                      id="p-min"
+   585→                      type="number"
+   586→                      min="0"
+   587→                      step="1"
+   588→                      value={form.minStock}
+   589→                      onChange={(e) => set('minStock', e.target.value)}
+   590→                    />
+   591→                    <p className="text-xs text-muted-foreground">Low-stock alert threshold.</p>
+   592→                  </div>
+   593→                </div>
+   594→              )}
+   595→
+   596→              {trackStock && editing && (
+   597→                <div className="grid gap-4 sm:grid-cols-2">
+   598→                  <div className="grid gap-2">
+   599→                    <Label>Current stock</Label>
+   600→                    <p className="flex h-9 items-center text-sm font-medium tabular-nums">
+   601→                      {editing.stockQty} {editing.unit}
+   602→                    </p>
+   603→                    <p className="text-xs text-muted-foreground">Adjust via the Stock module.</p>
+   604→                  </div>
+   605→                  <div className="grid gap-2">
+   606→                    <Label htmlFor="p-min-edit">Minimum stock</Label>
+   607→                    <Input
+   608→                      id="p-min-edit"
+   609→                      type="number"
+   610→                      min="0"
+   611→                      step="1"
+   612→                      value={form.minStock}
+   613→                      onChange={(e) => set('minStock', e.target.value)}
+   614→                    />
+   615→                  </div>
+   616→                </div>
+   617→              )}
+   618→
+   619→              {formError && <p className="text-sm font-medium text-rose-600">{formError}</p>}
+   620→            </div>
+   621→          </div>
+   622→
+   623→          <DialogFooter>
+   624→            <Button variant="outline" onClick={() => setDialogOpen(false)} className="min-h-11">Cancel</Button>
+   625→            <Button onClick={submit} disabled={saveMutation.isPending} className="min-h-11">
+   626→              {saveMutation.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+   627→              {editing ? 'Save changes' : 'Create'}
+   628→            </Button>
+   629→          </DialogFooter>
+   630→        </DialogContent>
+   631→      </Dialog>
+   632→
+   633→      {/* Delete confirmation */}
+   634→      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+   635→        <AlertDialogContent>
+   636→          <AlertDialogHeader>
+   637→            <AlertDialogTitle>Delete {deleteTarget?.ref}?</AlertDialogTitle>
+   638→            <AlertDialogDescription>
+   639→              {deleteTarget && (
+   640→                <>
+   641→                  “{deleteTarget.label}” and its stock movement history will be removed. Products used on
+   642→                  proposals, orders or invoices cannot be deleted.
+   643→                </>
+   644→              )}
+   645→            </AlertDialogDescription>
+   646→          </AlertDialogHeader>
+   647→          <AlertDialogFooter>
+   648→            <AlertDialogCancel className="min-h-11">Cancel</AlertDialogCancel>
+   649→            <AlertDialogAction
+   650→              className="bg-rose-600 text-white hover:bg-rose-700 min-h-11"
+   651→              disabled={deleteMutation.isPending}
+   652→              onClick={(e) => {
+   653→                e.preventDefault()
+   654→                if (deleteTarget) deleteMutation.mutate(deleteTarget.id)
+   655→              }}
+   656→            >
+   657→              {deleteMutation.isPending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+   658→              Delete
+   659→            </AlertDialogAction>
+   660→          </AlertDialogFooter>
+   661→        </AlertDialogContent>
+   662→      </AlertDialog>
+   663→    </div>
+   664→  )
+   665→}
+   666→

@@ -1,9 +1,9 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Package, Wrench, Plus, Search, Pencil, Trash2, TriangleAlert, Wallet, Loader2, Boxes,
+  Package, Wrench, Plus, Search, Pencil, Trash2, TriangleAlert, Wallet, Loader2, Boxes, ImagePlus,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { useToast } from '@/hooks/use-toast'
 import { get, post, put, del } from '@/components/erp/lib/api'
+import { authHeaders } from '@/components/erp/lib/session-token'
 import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
 import { ImportExportButtons } from '@/components/erp/shared/import-export'
 import { StatusBadge, DocStatusBadge } from '@/components/erp/shared/status-badge'
@@ -44,6 +45,7 @@ interface ProductRow {
   vatRate: number
   unit: string
   barcode: string | null
+  imageUrl: string | null
   manageStock: boolean
   stockQty: number
   minStock: number
@@ -106,6 +108,9 @@ export default function ProductsModule() {
   const [form, setForm] = useState<ProductForm>(EMPTY_FORM)
   const [formError, setFormError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ProductRow | null>(null)
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [imgPending, setImgPending] = useState(false)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   const productsQuery = useQuery<ProductRow[]>({
     queryKey: ['products'],
@@ -197,6 +202,7 @@ export default function ProductsModule() {
     setEditing(null)
     setForm(EMPTY_FORM)
     setFormError(null)
+    setImageUrl(null)
     setDialogOpen(true)
   }
 
@@ -216,8 +222,50 @@ export default function ProductsModule() {
       minStock: String(p.minStock),
       status: p.status as ProductStatus,
     })
+    setImageUrl(p.imageUrl ?? null)
     setFormError(null)
     setDialogOpen(true)
+  }
+
+  // ---- Product image (single static file on the server, set after the product exists)
+  const uploadImage = async (file: File) => {
+    if (!editing) return
+    setImgPending(true)
+    try {
+      const body = new FormData()
+      body.append('file', file)
+      // Plain fetch (no Content-Type header) so the browser sets the multipart boundary.
+      const res = await fetch(`/api/products/${editing.id}/image`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body,
+      })
+      const json = (await res.json().catch(() => ({}))) as { error?: string; data?: ProductRow }
+      if (!res.ok || !json.data) throw new Error(json.error ?? `Upload failed (${res.status})`)
+      setImageUrl(json.data.imageUrl ?? null)
+      qc.invalidateQueries({ queryKey: ['products'] })
+      toast({ title: 'Image uploaded', description: `${json.data.ref} — ${json.data.label}` })
+    } catch (e) {
+      toast({ title: 'Error', description: (e as Error).message, variant: 'destructive' })
+    } finally {
+      setImgPending(false)
+      if (imageInputRef.current) imageInputRef.current.value = ''
+    }
+  }
+
+  const removeImage = async () => {
+    if (!editing) return
+    setImgPending(true)
+    try {
+      await del<ProductRow>(`/api/products/${editing.id}/image`)
+      setImageUrl(null)
+      qc.invalidateQueries({ queryKey: ['products'] })
+      toast({ title: 'Image removed' })
+    } catch (e) {
+      toast({ title: 'Error', description: (e as Error).message, variant: 'destructive' })
+    } finally {
+      setImgPending(false)
+    }
   }
 
   const submit = () => {
@@ -351,10 +399,22 @@ export default function ProductsModule() {
                       <TableRow key={p.id} className="group">
                         <TableCell className="whitespace-nowrap font-mono text-xs font-medium">{p.ref}</TableCell>
                         <TableCell className="max-w-[260px]">
-                          <p className="truncate font-medium">{p.label}</p>
-                          {p.description && (
-                            <p className="truncate text-xs text-muted-foreground">{p.description}</p>
-                          )}
+                          <div className="flex items-center gap-2.5">
+                            {p.imageUrl && (
+                              <img
+                                src={p.imageUrl}
+                                alt=""
+                                aria-hidden="true"
+                                className="h-9 w-9 shrink-0 rounded-md border object-cover"
+                              />
+                            )}
+                            <div className="min-w-0">
+                              <p className="truncate font-medium">{p.label}</p>
+                              {p.description && (
+                                <p className="truncate text-xs text-muted-foreground">{p.description}</p>
+                              )}
+                            </div>
+                          </div>
                         </TableCell>
                         <TableCell>
                           {p.type === 'SERVICE'
@@ -486,6 +546,74 @@ export default function ProductsModule() {
                   placeholder="Optional internal description"
                 />
               </div>
+
+              {/* Product image — one static file on the server, added after the product exists */}
+              {editing ? (
+                <div className="flex items-center gap-4 rounded-lg border p-3">
+                  <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted/40">
+                    {imageUrl ? (
+                      <img
+                        src={imageUrl}
+                        alt={`Image of ${editing.label}`}
+                        className="h-full w-full object-contain"
+                      />
+                    ) : (
+                      <Package className="h-8 w-8 text-muted-foreground/50" aria-hidden="true" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">Product image</p>
+                    <p className="text-xs text-muted-foreground">
+                      PNG, JPEG, WebP or GIF — up to 5 MB. Shown in the catalog list.
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        ref={imageInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        className="hidden"
+                        aria-label="Upload product image"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (file) void uploadImage(file)
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5"
+                        disabled={imgPending}
+                        onClick={() => imageInputRef.current?.click()}
+                      >
+                        {imgPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <ImagePlus className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        {imageUrl ? 'Replace image' : 'Upload image'}
+                      </Button>
+                      {imageUrl && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="gap-1.5 text-destructive hover:text-destructive"
+                          disabled={imgPending}
+                          onClick={() => void removeImage()}
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+                  Save the product first — you can add its image afterwards via Edit.
+                </p>
+              )}
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="grid gap-2">

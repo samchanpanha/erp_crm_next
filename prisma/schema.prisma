@@ -110,6 +110,7 @@ model Product {
   vatRate     Float   @default(20)
   unit        String  @default("unit")
   barcode     String?
+  imageUrl    String? // static image URL e.g. /products/product-<id>.png?v=… (file lives in public/products)
   manageStock Boolean @default(true) // false for services
   stockQty    Int     @default(0) // denormalized current stock (products only)
   minStock    Int     @default(0)

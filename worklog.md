@@ -797,3 +797,35 @@ Stage Summary:
 - "Buy me a coffee" quick-access button restored beside Quick create: dialog loads the static KHQR payment image + requested tagline + scan instructions for every signed-in user; image upload/replace/remove locked to the super administrator on both client and server
 - Deliberately no ERP module/nav/DB footprint — the feature is exactly button + dialog + one static file
 - Demo credentials unchanged: admin@dolinext.com / demo123 (super admin) · pat@demo.local / testpass123 (Viewer)
+
+---
+Task ID: 30
+Agent: Main orchestrator (Z.ai Code)
+Task: "Help me implement product & service I add upload image, for buy me a coffee I don't need upload image, I will manual add url image into"
+
+Work Log:
+- PRODUCT IMAGE UPLOAD (new):
+  * prisma: Product.imageUrl String? column added; bun run db:push (column verified via PRAGMA table_info)
+  * NEW src/lib/product-image.ts (server fs): one static file per product (public/products/product-<id>.<ext>), png|jpg|jpeg|webp|gif whitelist, 5 MB cap, writeProductImage clears other variants (exactly one file per product), findProductImage/productImageUrl (?v=<mtime> cache-buster), clearProductImage
+  * NEW /api/products/[id]/image: POST FormData(file) + DELETE — requirePerm('products.edit'), tenant-scoped 404, writes file + stores cache-busted URL on Product.imageUrl / clears both
+  * /api/products/[id] DELETE now also clears the image file (best-effort) after product delete
+  * products.tsx: ProductRow.imageUrl; list Label cell shows 36px rounded thumbnail when present; Edit dialog gains "Product image" section (80px preview + Upload/Replace + Remove, hidden file input, plain fetch + authHeaders for multipart); Create dialog shows "Save the product first — you can add its image afterwards via Edit." hint
+- COFFEE — upload REPLACED by manual URL:
+  * Deleted src/lib/static-khqr.ts, /api/coffee/static-image, public/coffee/ — no file upload for coffee at all
+  * NEW /api/coffee/image-url: GET (any signed-in user) → { khqrUrl | null }; PUT super-administrator only ("*" via isSuperAdmin) body { url: string|null }; URL validated (max 1000, must start https?:// or /), stored per-tenant in Setting row key 'coffee.khqrImageUrl' (invisible in Settings UI — it renders whitelisted keys only; PUT /api/settings whitelist blocks edits there)
+  * coffee-button.tsx: file upload controls replaced by "Image URL" panel for the super admin (Input with defaultValue keyed by stored URL + Save + Remove trash, Enter submits, helper copy "Paste a direct image URL (https://…) or a path to a file dropped into /public (e.g. /khqr.png)"); dialog body unchanged (tagline, QR panel from URL, Download QR, scan steps); onError dims broken images; non-admin empty-state copy unchanged
+- Ops: Prisma client was regenerated but the running dev server kept serving a STALE client from Turbopack's persistent cache (Product SELECT lacked imageUrl) — fixed by rm -rf .next + restart (setsid --fork bun run dev); noted for future schema changes
+- Verification:
+  * eslint + tsc clean (project code); GET /api/products now includes imageUrl
+  * Product image API: anon 401 · viewer POST 403 · admin PNG 200 (+ static URL served 200) · GIF replace 200 with old variant 404 · DELETE → imageUrl null + file gone · cleanup confirmed
+  * Coffee URL API: anon 401 · viewer PUT 403 · invalid 'ftp://nope' 400 with message · admin PUT 200 persisted (GET returns it) · PUT null clears · Settings map contains the key but Settings UI ignores unknown keys
+  * Browser E2E admin: Products edit dialog → image section → real upload → preview + list thumbnail + Replace/Remove; Remove restores Upload; create dialog shows hint, no upload; coffee dialog → URL input → Save /khqr-test.png → QR renders (naturalWidth 120) + Download + steps → trash removes → empty state + input cleared
+  * Browser E2E viewer (pat): coffee dialog = title/tagline/empty message, buttons [Close] only — no URL input, no Super admin badge
+  * Mobile 390px: no overflow, coffee button icon-only, products dialog fits (358px)
+  * Zero console/page errors; dev.log free of 5xx; test fixtures removed (public/products/ empty, coffee URL null)
+
+Stage Summary:
+- Products & Services support per-product image upload: one static file on the server per product, cache-busted URL in Product.imageUrl, thumbnails in the catalog list, upload/replace/remove inside the Edit dialog (products.edit enforced server-side)
+- Buy Me a Coffee no longer uploads: the super administrator pastes an image URL (external https:// or a /public path) in the coffee dialog; stored per-tenant in the Setting table, shown to everyone, removable anytime
+- Dev-server note: after prisma generate, clear .next and restart or Turbopack serves a stale Prisma client
+- Demo credentials unchanged: admin@dolinext.com / demo123 (super admin) · pat@demo.local / testpass123 (Viewer)

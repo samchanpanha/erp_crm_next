@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { requirePerm } from '@/lib/auth'
+import { clearProductImage } from '@/lib/product-image'
 
 export const dynamic = 'force-dynamic'
 
@@ -142,6 +143,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     }
 
     await db.product.delete({ where: { id } })
+    // best-effort cleanup of the static image file (public/products/product-<id>.*)
+    await clearProductImage(id)
     return NextResponse.json({ data: { ok: true } })
   } catch (err) {
     console.error('DELETE /api/products/[id] failed', err)
