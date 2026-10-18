@@ -37,23 +37,14 @@ import {
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
+import { fetchApi as api } from '@/components/erp/lib/api'
 import { PERMISSION_MODULES, canEdit } from '@/lib/permissions'
 import { useAuthStore } from '@/lib/auth-store'
 import { cn } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
-// API helper — { data } / { error } envelope
-// ---------------------------------------------------------------------------
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-  })
-  const json = (await res.json().catch(() => ({}))) as { data?: T; error?: string }
-  if (!res.ok) throw new Error(json.error ?? `Request failed (${res.status})`)
-  return json.data as T
-}
-
+// API: shared fetchApi (src/components/erp/lib/api.ts) — sends the session
+// Authorization header + { data } / { error } envelope handling.
 // ---------------------------------------------------------------------------
 // Types (mirror API payloads)
 // ---------------------------------------------------------------------------

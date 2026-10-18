@@ -8,7 +8,9 @@ import {
   Receipt, CreditCard, Landmark, Truck, PackageCheck, Package, Boxes,
   FolderKanban, Users, Palmtree, Wallet, LifeBuoy, BookOpen, CalendarDays,
   ChartColumn, Settings as SettingsIcon, Menu, Search, Plus, LogOut,
-  ShieldCheck, Loader2, type LucideIcon,
+  ShieldCheck, Loader2, ChevronDown, House, Contact, TrendingUp,
+  ShoppingBag, Warehouse, Briefcase, Headphones, SlidersHorizontal,
+  type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { canView, canEdit } from '@/lib/permissions'
@@ -16,7 +18,7 @@ import { useAuthStore, type SessionUser } from '@/lib/auth-store'
 import { authHeaders } from '@/components/erp/lib/session-token'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet'
+import { Sheet, SheetContent, SheetDescription, SheetTrigger, SheetTitle } from '@/components/ui/sheet'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -33,18 +35,25 @@ const loadingFallback = () => (
 )
 
 interface NavItem { key: string; label: string; icon: LucideIcon }
-interface NavGroup { group: string; items: NavItem[] }
+interface NavGroup { group: string; icon: LucideIcon; items: NavItem[] }
 
+/**
+ * Sidebar menu tree: parent groups (collapsible) → child modules.
+ * Group membership only affects navigation UI — permissions stay keyed by item.
+ */
 export const NAV: NavGroup[] = [
   {
     group: 'Home',
+    icon: House,
     items: [
       { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { key: 'reports', label: 'Reports', icon: ChartColumn },
+      { key: 'agenda', label: 'Agenda', icon: CalendarDays },
     ],
   },
   {
     group: 'CRM & Sales',
+    icon: Contact,
     items: [
       { key: 'third-parties', label: 'Third Parties', icon: Building2 },
       { key: 'opportunities', label: 'Opportunities', icon: Target },
@@ -55,6 +64,7 @@ export const NAV: NavGroup[] = [
   },
   {
     group: 'Billing & Finance',
+    icon: Wallet,
     items: [
       { key: 'invoices', label: 'Invoices', icon: Receipt },
       { key: 'payments', label: 'Payments', icon: CreditCard },
@@ -63,6 +73,7 @@ export const NAV: NavGroup[] = [
   },
   {
     group: 'Purchasing',
+    icon: ShoppingBag,
     items: [
       { key: 'purchase-orders', label: 'Supplier Orders', icon: Truck },
       { key: 'supplier-invoices', label: 'Supplier Invoices', icon: PackageCheck },
@@ -70,14 +81,20 @@ export const NAV: NavGroup[] = [
   },
   {
     group: 'Products & Stock',
+    icon: Warehouse,
     items: [
       { key: 'products', label: 'Products & Services', icon: Package },
       { key: 'stock', label: 'Stock & Warehouses', icon: Boxes },
     ],
   },
-  { group: 'Projects', items: [{ key: 'projects', label: 'Projects & Tasks', icon: FolderKanban }] },
+  {
+    group: 'Projects',
+    icon: FolderKanban,
+    items: [{ key: 'projects', label: 'Projects & Tasks', icon: FolderKanban }],
+  },
   {
     group: 'HR',
+    icon: Briefcase,
     items: [
       { key: 'employees', label: 'Employees', icon: Users },
       { key: 'leave', label: 'Leave Requests', icon: Palmtree },
@@ -86,14 +103,15 @@ export const NAV: NavGroup[] = [
   },
   {
     group: 'Support',
+    icon: Headphones,
     items: [
       { key: 'tickets', label: 'Tickets', icon: LifeBuoy },
       { key: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
     ],
   },
-  { group: 'Productivity', items: [{ key: 'agenda', label: 'Agenda', icon: CalendarDays }] },
   {
     group: 'Configuration',
+    icon: SlidersHorizontal,
     items: [
       { key: 'settings', label: 'Settings', icon: SettingsIcon },
       { key: 'users', label: 'Users & Roles', icon: ShieldCheck },
@@ -204,43 +222,138 @@ function Logo() {
   )
 }
 
+/** localStorage key persisting which sidebar groups are expanded */
+const NAV_OPEN_KEY = 'dolinext_nav_open'
+
+function readOpenGroups(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(NAV_OPEN_KEY)
+    if (raw) return new Set(JSON.parse(raw) as string[])
+  } catch {
+    // storage blocked — fall through to empty set
+  }
+  return new Set()
+}
+
+function persistOpenGroups(groups: Set<string>) {
+  try {
+    window.localStorage.setItem(NAV_OPEN_KEY, JSON.stringify([...groups]))
+  } catch {
+    // storage blocked — state still lives for this mount
+  }
+}
+
+function groupSlug(group: string): string {
+  return `nav-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+}
+
+/**
+ * Sidebar menu: parent groups (collapsible) → child module links.
+ * Open/closed state persists in localStorage; the group holding the active
+ * route is always expanded, and its parent shows a subtle active hint while
+ * collapsed so users never lose their place.
+ */
 function SidebarContent({ current, nav }: { current: string; nav: NavGroup[] }) {
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
+    const stored = readOpenGroups()
+    if (stored.size > 0) return stored
+    // First visit: expand the active group (falls back to Home).
+    const activeGroup = nav.find((g) => g.items.some((i) => i.key === current))?.group
+    return new Set([activeGroup ?? 'Home'])
+  })
+
+  // Keep the active route's group expanded (also covers search/quick-create jumps).
+  // Derived-state adjustment during render — the React-recommended pattern.
+  const [prevCurrent, setPrevCurrent] = useState(current)
+  if (prevCurrent !== current) {
+    setPrevCurrent(current)
+    const group = nav.find((g) => g.items.some((i) => i.key === current))?.group
+    if (group && !openGroups.has(group)) {
+      const next = new Set(openGroups)
+      next.add(group)
+      persistOpenGroups(next)
+      setOpenGroups(next)
+    }
+  }
+
+  function toggleGroup(group: string) {
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(group)) next.delete(group)
+      else next.add(group)
+      persistOpenGroups(next)
+      return next
+    })
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="px-4 py-4">
         <Logo />
       </div>
       <ScrollArea className="flex-1 px-2 pb-4">
-        <nav aria-label="ERP modules" className="space-y-4">
-          {nav.map((g) => (
-            <div key={g.group}>
-              <p className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                {g.group}
-              </p>
-              <ul className="space-y-0.5">
-                {g.items.map((item) => {
-                  const active = current === item.key
-                  return (
-                    <li key={item.key}>
-                      <button
-                        onClick={() => navigate(item.key)}
-                        aria-current={active ? 'page' : undefined}
-                        className={cn(
-                          'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors',
-                          active
-                            ? 'bg-primary text-primary-foreground font-medium shadow-sm'
-                            : 'text-foreground/80 hover:bg-accent hover:text-foreground'
-                        )}
-                      >
-                        <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                        <span className="truncate">{item.label}</span>
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            </div>
-          ))}
+        <nav aria-label="ERP modules" className="space-y-0.5">
+          {nav.map((g) => {
+            const open = openGroups.has(g.group)
+            const activeChild = g.items.some((i) => i.key === current)
+            return (
+              <div key={g.group}>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(g.group)}
+                  aria-expanded={open}
+                  aria-controls={groupSlug(g.group)}
+                  className={cn(
+                    'mt-1 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    activeChild && !open
+                      ? 'text-foreground'
+                      : 'text-foreground/75',
+                  )}
+                >
+                  <g.icon
+                    className={cn(
+                      'h-4 w-4 shrink-0',
+                      activeChild ? 'text-primary' : 'text-muted-foreground',
+                    )}
+                    aria-hidden="true"
+                  />
+                  <span className="flex-1 truncate text-left">{g.group}</span>
+                  <ChevronDown
+                    className={cn(
+                      'h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200',
+                      open && 'rotate-180',
+                    )}
+                    aria-hidden="true"
+                  />
+                </button>
+                {open && (
+                  <ul id={groupSlug(g.group)} className="ml-[26px] mt-0.5 space-y-0.5 border-l pl-2">
+                    {g.items.map((item) => {
+                      const active = current === item.key
+                      return (
+                        <li key={item.key}>
+                          <button
+                            type="button"
+                            onClick={() => navigate(item.key)}
+                            aria-current={active ? 'page' : undefined}
+                            className={cn(
+                              'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors',
+                              active
+                                ? 'bg-primary font-medium text-primary-foreground shadow-sm'
+                                : 'text-foreground/80 hover:bg-accent hover:text-foreground',
+                            )}
+                          >
+                            <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                            <span className="truncate">{item.label}</span>
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            )
+          })}
         </nav>
       </ScrollArea>
       <div className="border-t px-4 py-3 text-[11px] text-muted-foreground">
@@ -444,6 +557,7 @@ function ErpApp({ user }: { user: SessionUser }) {
             </SheetTrigger>
             <SheetContent side="left" className="w-72 p-0">
               <SheetTitle className="sr-only">Navigation</SheetTitle>
+              <SheetDescription className="sr-only">ERP module menu grouped by category</SheetDescription>
               <SidebarContent current={route} nav={nav} />
             </SheetContent>
           </Sheet>

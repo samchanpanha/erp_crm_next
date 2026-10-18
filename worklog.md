@@ -614,3 +614,24 @@ Stage Summary:
 - Login/registration now work everywhere including the cross-site iframe preview: session token rides in Authorization header + localStorage; httpOnly cookie kept as same-site-tab fallback; all guarded APIs accept both transports
 - Export/template downloads converted to authenticated fetch-blob (iframe-safe); imports and watchdog carry the header too
 - Demo credentials unchanged: admin@dolinext.com / demo123 (also sarah Sales, dan Accountant, pat@demo.local Viewer / testpass123)
+
+---
+Task ID: 23
+Agent: Main orchestrator (Z.ai Code)
+Task: Fix Users & Roles 401 ("Failed to load / Authentication required") + parent/child grouped side menu
+
+Work Log:
+- Users & Roles 401 root cause: modules/users.tsx defined a LOCAL api() fetch helper (line ~47) that never attached the session Authorization header — inside the cookie-blocked iframe preview every /api/users & /api/roles call came back 401 "Authentication required. Please sign in."
+- Fix: deleted the local helper, swapped to `import { fetchApi as api } from '@/components/erp/lib/api'` (shared client that sends authHeaders) — signature-compatible, all 10 call sites unchanged; swept src/components/erp for other bypassers (only api.ts / import-export.tsx remained, both already auth-aware)
+- Grouped side menu (erp-app.tsx):
+  * NAV restructured to 9 parent groups each with icon: Home (Dashboard, Reports, Agenda — Agenda moved here from old single-child Productivity), CRM & Sales, Billing & Finance, Purchasing, Products & Stock, Projects, HR, Support, Configuration; NavGroup interface gains icon: LucideIcon; group membership is presentation-only (permissions stay per-item)
+  * SidebarContent rewritten as collapsible parent/child tree: parent rows = icon + label + rotating ChevronDown, aria-expanded + aria-controls (slug ids nav-group-*); children = indented ul with left guide border, kept existing active style (bg-primary) + aria-current="page"
+  * Open/closed state persisted in localStorage (dolinext_nav_open); first visit expands the active group; derived-state-during-render adjustment (prevCurrent pattern — passes react-hooks/set-state-in-effect) auto-expands the group of the active route on navigation/search/quick-create jumps; collapsed parent of an active child shows a subtle hint (foreground text + primary icon)
+  * Same component powers desktop aside and mobile Sheet (SheetContent now has sr-only SheetDescription → fixes Radix "Missing Description" console warning)
+- Verification (agent-browser, fresh session): login → sidebar shows 9 parents, Home expanded (active); Configuration expand → Users & Roles child → module loads WITH DATA (4 users w/ roles/status/last-sign-in, 4 tabs roles incl. Administrator/Accountant "System" badges) — 401 gone; Roles tab renders; child click navigates (#/dashboard verified physically + via JS); collapse Home → aria-expanded=false, persisted; reload → persisted expansion respected (Configuration only); navigate #/invoices → Billing & Finance auto-expands + Invoices aria-current + persisted to ["Configuration","Billing & Finance"]; mobile 390px: no horizontal scroll, sheet nav grouped, consistent state; desktop 1280px reload: 9 groups, persisted expansion, zero console errors/warnings; eslint + tsc --noEmit clean; dev.log free of 5xx
+- Note: two transient agent-browser click "failures" during verification were stale-ref artifacts (clicked mid re-render); physical + JS clicks confirmed working after render settled — not an app bug
+
+Stage Summary:
+- All modules now use the single auth-aware fetchApi — no request path can drop the Bearer session anymore
+- Sidebar is a true parent/child menu: collapsible groups with icons, chevrons, persistence, active-group auto-open, active hints, a11y (aria-expanded/controls/current), works desktop + mobile sheet
+- Demo data untouched (t_demo: admin/sarah/dan/pat)
