@@ -692,3 +692,28 @@ Stage Summary:
 - RBAC: coffee.view (all roles incl. patched Viewer) / coffee.edit (Administrator, Manager; grantable via matrix); API enforced server-side (401/403/404)
 - Toast bug fix benefits the whole app (sonner toasts now actually render)
 - Demo credentials unchanged: admin@dolinext.com / demo123 · pat@demo.local / testpass123 (Viewer)
+
+---
+Task ID: 26
+Agent: Main orchestrator (Z.ai Code)
+Task: "Buy me coffee, I want to only image I upload, then I want pick it near button quick create, and assign only user super administrator can upload this image it is only me"
+
+Work Log:
+- Refined Task 25's coffee feature per three new requirements: (1) quick access near Quick create, (2) ONLY the owner-uploaded image is shown (no placeholder), (3) only the super administrator can upload it
+- src/lib/permissions.ts: added isSuperAdmin(permissions) ("*" wildcard = super administrator, documented as the sole KHQR uploader); Manager role preset no longer grants coffee.edit ( Administrator-only via "*"); Manager description updated
+- API /api/coffee/page PUT: image changes (khqrImage upload/replace/remove) now additionally require the wildcard — coffee.edit without "*" gets 403 "Only the super administrator can upload or change the KHQR image."; text fields stay coffee.edit-gated
+- NEW src/components/erp/shared/coffee-qr.tsx (shared coffee lib): moved types (CoffeePageCfg/CoffeeSupportRow/CoffeePayload/Currency), helpers (money, parsePresets, initials, readFileAsDataUrl, khqrFileExtension, downloadDataUrl, SYMBOL, MAX_IMAGE_BYTES, scrollbarCls), API helpers (fetchCoffeePage, putCoffeePage — both via shared fetchApi so Bearer works in the iframe), UI atoms (KhqrPanel white QR panel sm/md/lg, ScanSteps 3-step list) + CoffeeQuickButton
+- CoffeeQuickButton (top bar): amber "Buy me a coffee" outline button rendered immediately left of Quick create in TopBar (icon-only on mobile); opens a dialog fetching ['coffee'] on open — with image: big QR on white panel, account·bank line, scan steps, Download QR (dataURL anchor, iframe-safe), Open coffee page (navigates #/coffee); WITHOUT image: EmptyState — super admin gets inline Upload/Replace/Remove controls right in the dialog, everyone else sees "Only the super administrator can upload the KHQR image. Please ask them to add it."; hidden unless coffee.view
+- modules/coffee.tsx: switched to shared lib imports (deleted ~80 duplicated lines); new mayUpload = isSuperAdmin(user.permissions) prop through CoffeePageView/CoffeeSettingsTab; Settings tab upload/replace/remove UI gated on mayUpload, non-super-admins see a ShieldCheck note instead; empty-state copy now says super-administrator (page tab KHQR card, pay dialog); module image markup swapped to KhqrPanel + ScanSteps; support-log calls keep fetchApi
+- erp-app.tsx TopBar: <CoffeeQuickButton user={user}/> before the Quick create dropdown
+- scripts/coffee-superadmin-only.ts (ran): cleared demo placeholder KHQR image/name/bank (verified visually first — generated checkerboard, not a user upload) so only the owner's future upload displays; stripped coffee.edit from non-wildcard roles (Manager in t_demo)
+- Verification:
+  * scripts/verify-coffee-rbac.ts — 15/15 pass: admin GET/text PUT/image PUT 200, GIF 400; temp coffee.edit-without-wildcard editor: text 200, image upload 403, image remove 403, GET fine; Viewer: GET 200, PUTs 403; anon 401; cleanup removed temp fixtures
+  * Browser E2E admin: header shows "Buy me a coffee" beside Quick create; dialog empty state + "Upload image"; real file upload via dialog → QR + Replace/Remove + super-admin note; "Open coffee page" → module with KHQR ready badge; module Settings upload also works and cache syncs both ways (module upload visible in header dialog, header Remove flips module badge to "QR not set yet"); pay dialog renders shared KhqrPanel
+  * Browser E2E Viewer (pat): header button visible, dialog = empty state + super-admin message, zero upload controls; Settings tab read-only + note; no Quick create (correct for Viewer)
+  * Mobile 390px: icon-only coffee button, no horizontal overflow; desktop 1280px screenshots clean; zero console/page errors; dev.log free of 5xx; eslint + tsc clean
+  * Final state: t_demo has NO khqr image (user uploads their own), tagline restored, only wildcard Administrator can change the image
+Stage Summary:
+- The coffee QR is now strictly the owner's: placeholder wiped, upload/replace/remove locked to the super administrator ("*") on both client and server, delegated editors (coffee.edit) can manage page text but get 403 on the image
+- One-click KHQR access lives in the top bar right next to Quick create for every user (scan flow), with upload/remove inline for the super admin — same cache as the coffee module so both views always agree
+- Demo credentials unchanged: admin@dolinext.com / demo123 (super admin) · pat@demo.local / testpass123 (Viewer)

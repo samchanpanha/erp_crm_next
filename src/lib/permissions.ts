@@ -57,6 +57,15 @@ export function canEdit(permissions: string[], moduleName: string): boolean {
   return hasPerm(permissions, perm(moduleName, 'edit'))
 }
 
+/**
+ * Super administrator = the wildcard "*" permission. This is the only role
+ * level allowed to upload/replace the tenant's KHQR payment image — the QR
+ * must always belong to the account owner, never to a delegated editor.
+ */
+export function isSuperAdmin(permissions: string[]): boolean {
+  return permissions.includes('*')
+}
+
 export interface SystemRoleDef {
   name: string
   description: string
@@ -78,10 +87,14 @@ export const SYSTEM_ROLE_DEFS: SystemRoleDef[] = [
   },
   {
     name: 'Manager',
-    description: 'Runs the business: all modules and settings, but cannot manage users & roles.',
+    description:
+      'Runs the business: all modules and settings, but cannot manage users & roles ' +
+      'or the coffee page (KHQR uploads are super-administrator only).',
     permissions: [
       ...allPerms('view'),
-      ...allPerms('edit').filter((p) => !p.startsWith('administration.')),
+      ...allPerms('edit').filter(
+        (p) => !p.startsWith('administration.') && p !== perm('coffee', 'edit'),
+      ),
     ],
   },
   {

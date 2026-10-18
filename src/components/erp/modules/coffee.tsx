@@ -6,7 +6,7 @@ import { format } from 'date-fns'
 import { toast } from 'sonner'
 import {
   CalendarDays, Coffee, Coins, Download, HeartHandshake, ImagePlus, Loader2,
-  Pencil, Plus, QrCode, ScanLine, Trash2, Users,
+  Pencil, Plus, QrCode, ShieldCheck, Trash2, Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -26,90 +26,15 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
 import { fetchApi as api } from '@/components/erp/lib/api'
-import { canEdit } from '@/lib/permissions'
+import {
+  fetchCoffeePage, putCoffeePage, KhqrPanel, ScanSteps,
+  MAX_IMAGE_BYTES, SYMBOL, money, parsePresets, initials, readFileAsDataUrl,
+  khqrFileExtension, downloadDataUrl, scrollbarCls,
+  type Currency, type CoffeePageCfg, type CoffeeSupportRow, type CoffeePayload,
+} from '@/components/erp/shared/coffee-qr'
+import { canEdit, isSuperAdmin } from '@/lib/permissions'
 import { useAuthStore } from '@/lib/auth-store'
 import { cn } from '@/lib/utils'
-
-// ---------------------------------------------------------------------------
-// Types (mirror API payloads)
-// ---------------------------------------------------------------------------
-type Currency = 'USD' | 'KHR'
-
-interface CoffeePageCfg {
-  displayName: string
-  tagline: string
-  currency: Currency
-  presetAmounts: string
-  khqrImage: string | null
-  khqrName: string | null
-  khqrBank: string | null
-  updatedAt?: string
-}
-
-interface CoffeeSupportRow {
-  id: string
-  name: string
-  amount: number
-  currency: Currency
-  message: string | null
-  date: string
-}
-
-interface CoffeePayload {
-  page: CoffeePageCfg
-  supporters: CoffeeSupportRow[]
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-const MAX_IMAGE_BYTES = 2 * 1024 * 1024
-const SYMBOL: Record<Currency, string> = { USD: '$', KHR: '៛' }
-
-function money(n: number, currency: Currency): string {
-  if (currency === 'KHR') {
-    return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(n)} KHR`
-  }
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n)
-}
-
-function parsePresets(raw: string): number[] {
-  return raw
-    .split(',')
-    .map((s) => Number.parseFloat(s.trim()))
-    .filter((n) => Number.isFinite(n) && n > 0)
-    .slice(0, 8)
-}
-
-function initials(name: string): string {
-  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('') || '?'
-}
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read the file'))
-    reader.readAsDataURL(file)
-  })
-}
-
-function khqrFileExtension(dataUrl: string): string {
-  const mime = /^data:image\/(\w+)[;,]/.exec(dataUrl)?.[1] ?? 'png'
-  return mime === 'jpeg' ? 'jpg' : mime === 'svg+xml' ? 'svg' : mime
-}
-
-function downloadDataUrl(dataUrl: string, filename: string) {
-  const a = document.createElement('a')
-  a.href = dataUrl
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-}
-
-const scrollbarCls =
-  '[&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-zinc-300 hover:[&::-webkit-scrollbar-thumb]:bg-zinc-400'
 
 // ---------------------------------------------------------------------------
 // Module
@@ -117,22 +42,21 @@ const scrollbarCls =
 export default function CoffeeModule() {
   const user = useAuthStore((s) => s.user)
   const mayEdit = user ? canEdit(user.permissions, 'coffee') : false
+  // Super administrator only — the KHQR image must belong to the account owner.
+  const mayUpload = user ? isSuperAdmin(user.permissions) : false
   const [tab, setTab] = useState('page')
   const queryClient = useQueryClient()
 
-  const q = useQuery({ queryKey: ['coffee'], queryFn: () => api<CoffeePayload>('/api/coffee/page') })
+  const q = useQuery({ queryKey: ['coffee'], queryFn: fetchCoffeePage })
 
   // Shared config saver — writes the page config and refreshes the cache.
   const [savingPage, setSavingPage] = useState(false)
   async function savePage(patch: Record<string, unknown>, successMsg: string): Promise<boolean> {
     setSavingPage(true)
     try {
-      const res = await api<{ page: CoffeePageCfg }>('/api/coffee/page', {
-        method: 'PUT',
-        body: JSON.stringify(patch),
-      })
+      const page = await putCoffeePage(patch)
       queryClient.setQueryData<CoffeePayload>(['coffee'], (old) =>
-        old ? { ...old, page: res.page } : old,
+        old ? { ...old, page } : old,
       )
       toast.success(successMsg)
       return true
@@ -275,7 +199,7 @@ export default function CoffeeModule() {
               key={page.updatedAt ?? 'default'}
               page={page}
               supporters={supporters}
-              mayEdit={mayEdit}
+              mayUpload={mayUpload}
               onGoSettings={() => setTab('settings')}
             />
           </TabsContent>
@@ -287,6 +211,7 @@ export default function CoffeeModule() {
               savingPage={savingPage}
               uploading={uploading}
               mayEdit={mayEdit}
+              mayUpload={mayUpload}
               onImageFile={(f) => void handleImageFile(f)}
               onRemoveImage={() => void removeImage()}
               onSavePatch={(patch, msg) => savePage(patch, msg)}
@@ -313,11 +238,11 @@ export default function CoffeeModule() {
 // Coffee page tab — the supporter-facing view
 // ---------------------------------------------------------------------------
 function CoffeePageView({
-  page, supporters, mayEdit, onGoSettings,
+  page, supporters, mayUpload, onGoSettings,
 }: {
   page: CoffeePageCfg
   supporters: CoffeeSupportRow[]
-  mayEdit: boolean
+  mayUpload: boolean
   onGoSettings: () => void
 }) {
   const presets = parsePresets(page.presetAmounts)
@@ -423,14 +348,11 @@ function CoffeePageView({
         <CardContent>
           {page.khqrImage ? (
             <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
-              <div className="rounded-xl border bg-white p-3 shadow-sm">
-                { }
-                <img
-                  src={page.khqrImage}
-                  alt={`KHQR payment QR code for ${page.khqrName ?? page.displayName}`}
-                  className="h-40 w-40 object-contain"
-                />
-              </div>
+              <KhqrPanel
+                src={page.khqrImage}
+                alt={`KHQR payment QR code for ${page.khqrName ?? page.displayName}`}
+                size="sm"
+              />
               <div className="min-w-0 flex-1 space-y-1.5 text-center sm:text-left">
                 {page.khqrName && (
                   <p className="text-sm"><span className="font-medium">Account:</span> {page.khqrName}</p>
@@ -458,12 +380,12 @@ function CoffeePageView({
               icon={QrCode}
               title="No KHQR code uploaded yet"
               description={
-                mayEdit
+                mayUpload
                   ? 'Upload your KHQR payment image in Settings and it will appear here for supporters to scan.'
-                  : 'The page owner has not uploaded a KHQR payment image yet.'
+                  : 'Only the super administrator can upload the KHQR payment image — it will appear here once added.'
               }
-              actionLabel={mayEdit ? 'Open Settings' : undefined}
-              onAction={mayEdit ? onGoSettings : undefined}
+              actionLabel={mayUpload ? 'Open Settings' : undefined}
+              onAction={mayUpload ? onGoSettings : undefined}
             />
           )}
         </CardContent>
@@ -521,45 +443,29 @@ function CoffeePageView({
 
           {page.khqrImage ? (
             <div className="flex flex-col items-center gap-4">
-              <div className="rounded-xl border bg-white p-3 shadow-sm">
-                { }
-                <img
-                  src={page.khqrImage}
-                  alt={`KHQR payment QR code for ${page.khqrName ?? page.displayName}`}
-                  className="h-56 w-56 object-contain"
-                />
-              </div>
+              <KhqrPanel
+                src={page.khqrImage}
+                alt={`KHQR payment QR code for ${page.khqrName ?? page.displayName}`}
+                size="lg"
+              />
               {(page.khqrName || page.khqrBank) && (
                 <p className="text-center text-sm text-muted-foreground">
                   {[page.khqrName, page.khqrBank].filter(Boolean).join(' · ')}
                 </p>
               )}
-              <ol className="w-full space-y-2 text-sm">
-                <li className="flex items-center gap-2.5">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-xs font-bold text-amber-700 dark:text-amber-400">1</span>
-                  Open any KHQR-supported banking app
-                </li>
-                <li className="flex items-center gap-2.5">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-xs font-bold text-amber-700 dark:text-amber-400">2</span>
-                  <span className="flex items-center gap-1.5"><ScanLine className="h-4 w-4 text-amber-600" aria-hidden="true" /> Scan the QR code</span>
-                </li>
-                <li className="flex items-center gap-2.5">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-xs font-bold text-amber-700 dark:text-amber-400">3</span>
-                  Confirm the payment — thank you for the coffee!
-                </li>
-              </ol>
+              <ScanSteps />
             </div>
           ) : (
             <EmptyState
               icon={QrCode}
               title="No KHQR code yet"
               description={
-                mayEdit
+                mayUpload
                   ? 'Upload your KHQR payment image in Settings first.'
-                  : 'The page owner has not uploaded a KHQR payment image yet.'
+                  : 'Only the super administrator can upload the KHQR payment image — it will appear here once added.'
               }
-              actionLabel={mayEdit ? 'Open Settings' : undefined}
-              onAction={mayEdit ? () => { setPayOpen(false); onGoSettings() } : undefined}
+              actionLabel={mayUpload ? 'Open Settings' : undefined}
+              onAction={mayUpload ? () => { setPayOpen(false); onGoSettings() } : undefined}
             />
           )}
         </DialogContent>
@@ -572,12 +478,13 @@ function CoffeePageView({
 // Settings tab — KHQR upload + page details
 // ---------------------------------------------------------------------------
 function CoffeeSettingsTab({
-  page, savingPage, uploading, mayEdit, onImageFile, onRemoveImage, onSavePatch,
+  page, savingPage, uploading, mayEdit, mayUpload, onImageFile, onRemoveImage, onSavePatch,
 }: {
   page: CoffeePageCfg
   savingPage: boolean
   uploading: boolean
   mayEdit: boolean
+  mayUpload: boolean
   onImageFile: (file: File) => void
   onRemoveImage: () => void
   onSavePatch: (patch: Record<string, unknown>, successMsg: string) => Promise<boolean>
@@ -630,14 +537,7 @@ function CoffeeSettingsTab({
         <CardContent className="space-y-4">
           <div className="flex justify-center">
             {page.khqrImage ? (
-              <div className="rounded-xl border bg-white p-3 shadow-sm">
-                { }
-                <img
-                  src={page.khqrImage}
-                  alt="Current KHQR payment QR code"
-                  className="h-44 w-44 object-contain"
-                />
-              </div>
+              <KhqrPanel src={page.khqrImage} alt="Current KHQR payment QR code" size="md" />
             ) : (
               <div className="flex h-44 w-44 flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-center text-muted-foreground">
                 <QrCode className="h-8 w-8" aria-hidden="true" />
@@ -646,7 +546,7 @@ function CoffeeSettingsTab({
             )}
           </div>
 
-          {mayEdit && (
+          {mayUpload && (
             <>
               <label className="block">
                 <input
@@ -686,6 +586,12 @@ function CoffeeSettingsTab({
                 </Button>
               )}
             </>
+          )}
+          {!mayUpload && (
+            <p className="flex items-start gap-1.5 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              Only the super administrator can upload or replace this image.
+            </p>
           )}
           <p className="text-xs text-muted-foreground">
             PNG, JPG or WebP · up to 2 MB · square images work best. Changes are saved immediately.

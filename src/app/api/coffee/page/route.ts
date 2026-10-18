@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { requireAuth, requirePerm } from '@/lib/auth'
+import { isSuperAdmin } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -45,6 +46,8 @@ export async function GET() {
 // PUT /api/coffee/page — partial upsert of the coffee page config.
 // Requires coffee.edit. khqrImage carries the uploaded image as a data URL
 // (png/jpeg/webp, ~2 MB file → ~2.7 MB base64); sending null clears it.
+// Image changes additionally require the super administrator ("*") — the KHQR
+// must belong to the account owner, so delegated editors cannot swap it.
 // ---------------------------------------------------------------------------
 const putSchema = z
   .object({
@@ -93,6 +96,14 @@ export async function PUT(req: Request) {
     const patch: Record<string, unknown> = { ...parsed.data }
     if (patch.khqrName === '') patch.khqrName = null
     if (patch.khqrBank === '') patch.khqrBank = null
+
+    // Super-administrator-only: upload / replace / remove the KHQR image.
+    if ('khqrImage' in patch && !isSuperAdmin(ctx.user.permissions)) {
+      return NextResponse.json(
+        { error: 'Only the super administrator can upload or change the KHQR image.' },
+        { status: 403 },
+      )
+    }
 
     const page = await db.coffeePage.upsert({
       where: { tenantId: ctx.user.tenantId },
