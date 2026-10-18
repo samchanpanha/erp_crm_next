@@ -28,8 +28,8 @@ import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
 import { fetchApi as api } from '@/components/erp/lib/api'
 import {
   fetchCoffeePage, putCoffeePage, KhqrPanel, ScanSteps,
-  MAX_IMAGE_BYTES, SYMBOL, money, parsePresets, initials, readFileAsDataUrl,
-  khqrFileExtension, downloadDataUrl, scrollbarCls,
+  MAX_IMAGE_BYTES, SYMBOL, money, parsePresets, initials,
+  uploadStaticKhqr, removeStaticKhqr, downloadUrl, khqrFileExtension, scrollbarCls,
   type Currency, type CoffeePageCfg, type CoffeeSupportRow, type CoffeePayload,
 } from '@/components/erp/shared/coffee-qr'
 import { canEdit, isSuperAdmin } from '@/lib/permissions'
@@ -68,7 +68,7 @@ export default function CoffeeModule() {
     }
   }
 
-  // KHQR image upload / removal — saved immediately (server config is the base).
+  // KHQR image upload / removal — the STATIC server file, super-admin only.
   const [uploading, setUploading] = useState(false)
   async function handleImageFile(file: File) {
     if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) {
@@ -81,10 +81,13 @@ export default function CoffeeModule() {
     }
     setUploading(true)
     try {
-      const dataUrl = await readFileAsDataUrl(file)
-      await savePage({ khqrImage: dataUrl }, 'KHQR image uploaded')
-    } catch {
-      toast.error('Could not read that file — please try another image.')
+      const khqrUrl = await uploadStaticKhqr(file)
+      queryClient.setQueryData<CoffeePayload>(['coffee'], (old) =>
+        old ? { ...old, page: { ...old.page, khqrUrl } } : old,
+      )
+      toast.success('Static KHQR image saved')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not upload that image')
     } finally {
       setUploading(false)
     }
@@ -92,7 +95,13 @@ export default function CoffeeModule() {
   async function removeImage() {
     setUploading(true)
     try {
-      await savePage({ khqrImage: null }, 'KHQR image removed')
+      await removeStaticKhqr()
+      queryClient.setQueryData<CoffeePayload>(['coffee'], (old) =>
+        old ? { ...old, page: { ...old.page, khqrUrl: null } } : old,
+      )
+      toast.success('KHQR image removed')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not remove the image')
     } finally {
       setUploading(false)
     }
@@ -141,7 +150,7 @@ export default function CoffeeModule() {
         icon={Coffee}
         actions={
           page ? (
-            page.khqrImage ? (
+            page.khqrUrl ? (
               <Badge variant="outline" className="gap-1.5 border-emerald-600/30 text-emerald-700 dark:text-emerald-400">
                 <QrCode className="h-3.5 w-3.5" aria-hidden="true" />
                 KHQR ready
@@ -346,10 +355,10 @@ function CoffeePageView({
           <CardDescription>Scan with any KHQR-supported app (Bakong, ACLEDA, ABA, Wing…)</CardDescription>
         </CardHeader>
         <CardContent>
-          {page.khqrImage ? (
+          {page.khqrUrl ? (
             <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
               <KhqrPanel
-                src={page.khqrImage}
+                src={page.khqrUrl}
                 alt={`KHQR payment QR code for ${page.khqrName ?? page.displayName}`}
                 size="sm"
               />
@@ -368,7 +377,11 @@ function CoffeePageView({
                   variant="outline"
                   size="sm"
                   className="mt-2 gap-2"
-                  onClick={() => downloadDataUrl(page.khqrImage!, `khqr-${page.khqrName ? page.khqrName.toLowerCase().replace(/\s+/g, '-') : 'code'}.${khqrFileExtension(page.khqrImage!)}`)}
+                  onClick={() => {
+                    if (!page.khqrUrl) return
+                    downloadUrl(page.khqrUrl, `khqr-${page.khqrName ? page.khqrName.toLowerCase().replace(/\s+/g, '-') : 'code'}.${khqrFileExtension(page.khqrUrl)}`)
+                      .catch(() => toast.error('Could not download the image'))
+                  }}
                 >
                   <Download className="h-4 w-4" aria-hidden="true" />
                   Download QR
@@ -441,10 +454,10 @@ function CoffeePageView({
             </DialogDescription>
           </DialogHeader>
 
-          {page.khqrImage ? (
+          {page.khqrUrl ? (
             <div className="flex flex-col items-center gap-4">
               <KhqrPanel
-                src={page.khqrImage}
+                src={page.khqrUrl}
                 alt={`KHQR payment QR code for ${page.khqrName ?? page.displayName}`}
                 size="lg"
               />
@@ -530,14 +543,14 @@ function CoffeeSettingsTab({
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <QrCode className="h-4 w-4 text-amber-600" aria-hidden="true" />
-            KHQR payment QR
+            Static KHQR payment QR
           </CardTitle>
-          <CardDescription>Your personal QR image from any Cambodian banking app.</CardDescription>
+          <CardDescription>Your QR image from any Cambodian banking app — saved as one static file that always shows.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex justify-center">
-            {page.khqrImage ? (
-              <KhqrPanel src={page.khqrImage} alt="Current KHQR payment QR code" size="md" />
+            {page.khqrUrl ? (
+              <KhqrPanel src={page.khqrUrl} alt="Current KHQR payment QR code" size="md" />
             ) : (
               <div className="flex h-44 w-44 flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-center text-muted-foreground">
                 <QrCode className="h-8 w-8" aria-hidden="true" />
@@ -570,10 +583,10 @@ function CoffeeSettingsTab({
                   {uploading
                     ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                     : <ImagePlus className="h-4 w-4" aria-hidden="true" />}
-                  {uploading ? 'Uploading…' : page.khqrImage ? 'Replace image' : 'Upload KHQR image'}
+                  {uploading ? 'Uploading…' : page.khqrUrl ? 'Replace image' : 'Upload KHQR image'}
                 </span>
               </label>
-              {page.khqrImage && (
+              {page.khqrUrl && (
                 <Button
                   type="button"
                   variant="outline"
@@ -594,7 +607,7 @@ function CoffeeSettingsTab({
             </p>
           )}
           <p className="text-xs text-muted-foreground">
-            PNG, JPG or WebP · up to 2 MB · square images work best. Changes are saved immediately.
+            PNG, JPG or WebP · up to 2 MB · square images work best. Stored as a static file on the server — set it once and it always shows. Changes are saved immediately.
           </p>
         </CardContent>
       </Card>

@@ -1,0 +1,735 @@
+     1→// ============================================================================
+     2→// DoliNext — Dolibarr-style ERP & CRM (rebuilt on Next.js 16 + Prisma/SQLite)
+     3→// NOTE: SQLite does not support Prisma enums -> all statuses are String fields.
+     4→// Allowed values are documented per-field and enforced by zod in API routes.
+     5→// ============================================================================
+     6→
+     7→generator client {
+     8→  provider = "prisma-client-js"
+     9→}
+    10→
+    11→datasource db {
+    12→  provider = "sqlite"
+    13→  url      = env("DATABASE_URL")
+    14→}
+    15→
+    16→// ---------------------------------------------------------------------------
+    17→// Sequences for human-friendly document refs (e.g. PR2601-0001, Dolibarr style)
+    18→// ---------------------------------------------------------------------------
+    19→model Sequence {
+    20→  key   String @id // prefix, e.g. "CU", "PR", "SO", "IN", "PO", "SI", "TK", "PJ", "CT", "ER"
+    21→  value Int    @default(0)
+    22→}
+    23→
+    24→// ---------------------------------------------------------------------------
+    25→// CRM — Third Parties (customers / prospects / suppliers) + Contacts
+    26→// ---------------------------------------------------------------------------
+    27→model ThirdParty {
+    28→  id           String   @id @default(cuid())
+    29→  tenantId     String   @default("t_demo")
+    30→  code         String // e.g. CU2601-0001 — unique per tenant
+    31→  name         String
+    32→  type         String   @default("CUSTOMER") // CUSTOMER | PROSPECT | SUPPLIER | CUSTOMER_SUPPLIER
+    33→  status       String   @default("ACTIVE") // ACTIVE | SUSPENDED
+    34→  email        String?
+    35→  phone        String?
+    36→  website      String?
+    37→  address      String?
+    38→  zip          String?
+    39→  city         String?
+    40→  country      String?
+    41→  vatNumber    String?
+    42→  currency     String   @default("USD")
+    43→  paymentTerms String   @default("NET30") // ON_ORDER | NET15 | NET30 | NET60
+    44→  notes        String?
+    45→  createdAt    DateTime @default(now())
+    46→  updatedAt    DateTime @updatedAt
+    47→
+    48→  contacts        Contact[]
+    49→  opportunities   Opportunity[]
+    50→  proposals       Proposal[]
+    51→  saleOrders      SaleOrder[]
+    52→  invoices        Invoice[]
+    53→  contracts       Contract[]
+    54→  purchaseOrders  PurchaseOrder[]
+    55→  supplierInvoices SupplierInvoice[]
+    56→  tickets         Ticket[]
+    57→  projects        Project[]
+    58→  agendaEvents    AgendaEvent[]
+    59→
+    60→  @@unique([tenantId, code])
+    61→  @@index([tenantId])
+    62→}
+    63→
+    64→model Contact {
+    65→  id           String  @id @default(cuid())
+    66→  tenantId     String  @default("t_demo")
+    67→  thirdPartyId String?
+    68→  thirdParty   ThirdParty? @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+    69→  firstName    String
+    70→  lastName     String
+    71→  position     String?
+    72→  email        String?
+    73→  phone        String?
+    74→  mobile       String?
+    75→  isPrimary    Boolean @default(false)
+    76→  notes        String?
+    77→  createdAt    DateTime @default(now())
+    78→}
+    79→
+    80→// ---------------------------------------------------------------------------
+    81→// CRM — Opportunities (lead pipeline)
+    82→// ---------------------------------------------------------------------------
+    83→model Opportunity {
+    84→  id                String    @id @default(cuid())
+    85→  tenantId          String    @default("t_demo")
+    86→  title             String
+    87→  thirdPartyId      String
+    88→  thirdParty        ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+    89→  stage             String    @default("NEW") // NEW | QUALIFIED | PROPOSAL | NEGOTIATION | WON | LOST
+    90→  amount            Float     @default(0)
+    91→  probability       Int       @default(10) // 0..100
+    92→  expectedCloseDate DateTime?
+    93→  notes             String?
+    94→  createdAt         DateTime  @default(now())
+    95→  updatedAt         DateTime  @updatedAt
+    96→}
+    97→
+    98→// ---------------------------------------------------------------------------
+    99→// Products & Services + Stock
+   100→// ---------------------------------------------------------------------------
+   101→model Product {
+   102→  id          String  @id @default(cuid())
+   103→  tenantId    String  @default("t_demo")
+   104→  ref         String // e.g. PD2601-0001 — unique per tenant
+   105→  label       String
+   106→  description String?
+   107→  type        String  @default("PRODUCT") // PRODUCT | SERVICE
+   108→  sellPrice   Float   @default(0)
+   109→  costPrice   Float   @default(0)
+   110→  vatRate     Float   @default(20)
+   111→  unit        String  @default("unit")
+   112→  barcode     String?
+   113→  manageStock Boolean @default(true) // false for services
+   114→  stockQty    Int     @default(0) // denormalized current stock (products only)
+   115→  minStock    Int     @default(0)
+   116→  status      String  @default("ACTIVE") // ACTIVE | SUSPENDED
+   117→  createdAt   DateTime @default(now())
+   118→  updatedAt   DateTime @updatedAt
+   119→
+   120→  stockMovements StockMovement[]
+   121→
+   122→  @@unique([tenantId, ref])
+   123→  @@index([tenantId])
+   124→}
+   125→
+   126→model Warehouse {
+   127→  id        String  @id @default(cuid())
+   128→  tenantId  String  @default("t_demo")
+   129→  code      String
+   130→  name      String
+   131→  address   String?
+   132→  city      String?
+   133→  country   String?
+   134→  isDefault Boolean @default(false)
+   135→
+   136→  movements StockMovement[]
+   137→
+   138→  @@unique([tenantId, code])
+   139→  @@index([tenantId])
+   140→}
+   141→
+   142→model StockMovement {
+   143→  id          String    @id @default(cuid())
+   144→  tenantId    String    @default("t_demo")
+   145→  productId   String
+   146→  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+   147→  warehouseId String?
+   148→  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+   149→  type        String    @default("IN") // IN | OUT | ADJUST
+   150→  qty         Int // signed: positive = stock in, negative = stock out
+   151→  reference   String? // linked document ref (PO, SO...)
+   152→  note        String?
+   153→  date        DateTime  @default(now())
+   154→}
+   155→
+   156→// ---------------------------------------------------------------------------
+   157→// Sales — Commercial Proposals
+   158→// ---------------------------------------------------------------------------
+   159→model Proposal {
+   160→  id            String    @id @default(cuid())
+   161→  tenantId      String    @default("t_demo")
+   162→  ref           String    // PRyymm-#### — unique per tenant
+   163→  thirdPartyId  String
+   164→  thirdParty    ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+   165→  status        String    @default("DRAFT") // DRAFT | VALIDATED | ACCEPTED | REFUSED | CLOSED
+   166→  date          DateTime  @default(now())
+   167→  validUntil    DateTime?
+   168→  subtotal      Float     @default(0)
+   169→  discountTotal Float     @default(0)
+   170→  vatTotal      Float     @default(0)
+   171→  total         Float     @default(0)
+   172→  notes         String?
+   173→  projectId     String?
+   174→  createdAt     DateTime  @default(now())
+   175→  updatedAt     DateTime  @updatedAt
+   176→
+   177→  lines ProposalLine[]
+   178→
+   179→  @@unique([tenantId, ref])
+   180→  @@index([tenantId])
+   181→}
+   182→
+   183→model ProposalLine {
+   184→  id         String  @id @default(cuid())
+   185→  proposalId String
+   186→  proposal   Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+   187→  productId  String?
+   188→  label      String
+   189→  description String?
+   190→  qty        Float   @default(1)
+   191→  unitPrice  Float   @default(0)
+   192→  discountPct Float  @default(0)
+   193→  vatRate    Float   @default(20)
+   194→  sort       Int     @default(0)
+   195→}
+   196→
+   197→// ---------------------------------------------------------------------------
+   198→// Sales — Sale Orders
+   199→// ---------------------------------------------------------------------------
+   200→model SaleOrder {
+   201→  id            String    @id @default(cuid())
+   202→  tenantId      String    @default("t_demo")
+   203→  ref           String    // SOyymm-#### — unique per tenant
+   204→  thirdPartyId  String
+   205→  thirdParty    ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+   206→  status        String    @default("DRAFT") // DRAFT | VALIDATED | DELIVERED | BILLED | CANCELLED
+   207→  date          DateTime  @default(now())
+   208→  deliveryDate  DateTime?
+   209→  subtotal      Float     @default(0)
+   210→  discountTotal Float     @default(0)
+   211→  vatTotal      Float     @default(0)
+   212→  total         Float     @default(0)
+   213→  notes         String?
+   214→  proposalId    String?
+   215→  projectId     String?
+   216→  createdAt     DateTime  @default(now())
+   217→  updatedAt     DateTime  @updatedAt
+   218→
+   219→  lines    SaleOrderLine[]
+   220→  invoices Invoice[]
+   221→
+   222→  @@unique([tenantId, ref])
+   223→  @@index([tenantId])
+   224→}
+   225→
+   226→model SaleOrderLine {
+   227→  id          String  @id @default(cuid())
+   228→  saleOrderId String
+   229→  saleOrder   SaleOrder @relation(fields: [saleOrderId], references: [id], onDelete: Cascade)
+   230→  productId   String?
+   231→  label       String
+   232→  description String?
+   233→  qty         Float   @default(1)
+   234→  unitPrice   Float   @default(0)
+   235→  discountPct Float   @default(0)
+   236→  vatRate     Float   @default(20)
+   237→  sort        Int     @default(0)
+   238→}
+   239→
+   240→// ---------------------------------------------------------------------------
+   241→// Billing — Customer Invoices + Payments
+   242→// ---------------------------------------------------------------------------
+   243→model Invoice {
+   244→  id            String    @id @default(cuid())
+   245→  tenantId      String    @default("t_demo")
+   246→  ref           String    // INyymm-#### — unique per tenant
+   247→  thirdPartyId  String
+   248→  thirdParty    ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+   249→  status        String    @default("DRAFT") // DRAFT | UNPAID | PARTIAL | PAID | CANCELLED
+   250→  date          DateTime  @default(now())
+   251→  dueDate       DateTime?
+   252→  subtotal      Float     @default(0)
+   253→  discountTotal Float     @default(0)
+   254→  vatTotal      Float     @default(0)
+   255→  total         Float     @default(0)
+   256→  paidAmount    Float     @default(0)
+   257→  notes         String?
+   258→  saleOrderId   String?
+   259→  saleOrder     SaleOrder? @relation(fields: [saleOrderId], references: [id], onDelete: SetNull)
+   260→  proposalId    String?
+   261→  projectId     String?
+   262→  createdAt     DateTime  @default(now())
+   263→  updatedAt     DateTime  @updatedAt
+   264→
+   265→  lines    InvoiceLine[]
+   266→  payments Payment[]
+   267→
+   268→  @@unique([tenantId, ref])
+   269→  @@index([tenantId])
+   270→}
+   271→
+   272→model InvoiceLine {
+   273→  id          String  @id @default(cuid())
+   274→  invoiceId   String
+   275→  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+   276→  productId   String?
+   277→  label       String
+   278→  description String?
+   279→  qty         Float   @default(1)
+   280→  unitPrice   Float   @default(0)
+   281→  discountPct Float   @default(0)
+   282→  vatRate     Float   @default(20)
+   283→  sort        Int     @default(0)
+   284→}
+   285→
+   286→model Payment {
+   287→  id                String   @id @default(cuid())
+   288→  tenantId          String   @default("t_demo")
+   289→  amount            Float
+   290→  method            String   @default("BANK_TRANSFER") // CASH | CARD | BANK_TRANSFER | CHECK | OTHER
+   291→  date              DateTime @default(now())
+   292→  reference         String?
+   293→  note              String?
+   294→  invoiceId         String?
+   295→  invoice           Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+   296→  supplierInvoiceId String?
+   297→  supplierInvoice   SupplierInvoice? @relation(fields: [supplierInvoiceId], references: [id], onDelete: Cascade)
+   298→  bankAccountId     String?
+   299→  createdAt         DateTime @default(now())
+   300→}
+   301→
+   302→// ---------------------------------------------------------------------------
+   303→// Purchasing — Supplier Orders + Supplier Invoices
+   304→// ---------------------------------------------------------------------------
+   305→model PurchaseOrder {
+   306→  id           String    @id @default(cuid())
+   307→  tenantId     String    @default("t_demo")
+   308→  ref          String    // POyymm-#### — unique per tenant
+   309→  thirdPartyId String
+   310→  thirdParty   ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+   311→  status       String    @default("DRAFT") // DRAFT | VALIDATED | RECEIVED | BILLED | CANCELLED
+   312→  date         DateTime  @default(now())
+   313→  expectedDate DateTime?
+   314→  subtotal     Float     @default(0)
+   315→  discountTotal Float    @default(0)
+   316→  vatTotal     Float     @default(0)
+   317→  total        Float     @default(0)
+   318→  notes        String?
+   319→  createdAt    DateTime  @default(now())
+   320→  updatedAt    DateTime  @updatedAt
+   321→
+   322→  lines PurchaseOrderLine[]
+   323→
+   324→  @@unique([tenantId, ref])
+   325→  @@index([tenantId])
+   326→}
+   327→
+   328→model PurchaseOrderLine {
+   329→  id          String  @id @default(cuid())
+   330→  purchaseOrderId String
+   331→  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+   332→  productId   String?
+   333→  label       String
+   334→  description String?
+   335→  qty         Float   @default(1)
+   336→  unitPrice   Float   @default(0)
+   337→  discountPct Float   @default(0)
+   338→  vatRate     Float   @default(20)
+   339→  sort        Int     @default(0)
+   340→}
+   341→
+   342→model SupplierInvoice {
+   343→  id             String    @id @default(cuid())
+   344→  tenantId       String    @default("t_demo")
+   345→  ref            String    // SIyymm-#### — unique per tenant
+   346→  thirdPartyId   String
+   347→  thirdParty     ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+   348→  status         String    @default("DRAFT") // DRAFT | UNPAID | PARTIAL | PAID | CANCELLED
+   349→  date           DateTime  @default(now())
+   350→  dueDate        DateTime?
+   351→  subtotal       Float     @default(0)
+   352→  vatTotal       Float     @default(0)
+   353→  total          Float     @default(0)
+   354→  paidAmount     Float     @default(0)
+   355→  notes          String?
+   356→  purchaseOrderId String?
+   357→  createdAt      DateTime  @default(now())
+   358→  updatedAt      DateTime  @updatedAt
+   359→
+   360→  payments Payment[]
+   361→
+   362→  @@unique([tenantId, ref])
+   363→  @@index([tenantId])
+   364→}
+   365→
+   366→// ---------------------------------------------------------------------------
+   367→// Contracts / Subscriptions
+   368→// ---------------------------------------------------------------------------
+   369→model Contract {
+   370→  id           String    @id @default(cuid())
+   371→  tenantId     String    @default("t_demo")
+   372→  ref          String    // CTyymm-#### — unique per tenant
+   373→  thirdPartyId String
+   374→  thirdParty   ThirdParty @relation(fields: [thirdPartyId], references: [id], onDelete: Cascade)
+   375→  label        String
+   376→  status       String    @default("DRAFT") // DRAFT | ACTIVE | EXPIRED | CANCELLED
+   377→  startDate    DateTime  @default(now())
+   378→  endDate      DateTime?
+   379→  amount       Float     @default(0)
+   380→  billingCycle String    @default("MONTHLY") // ONE_TIME | MONTHLY | QUARTERLY | YEARLY
+   381→  notes        String?
+   382→  createdAt    DateTime  @default(now())
+   383→  updatedAt    DateTime  @updatedAt
+   384→}
+   385→
+   386→// ---------------------------------------------------------------------------
+   387→// Projects, Tasks & Timesheets
+   388→// ---------------------------------------------------------------------------
+   389→model Project {
+   390→  id           String    @id @default(cuid())
+   391→  tenantId     String    @default("t_demo")
+   392→  ref          String    // PJyymm-#### — unique per tenant
+   393→  title        String
+   394→  description  String?
+   395→  thirdPartyId String?
+   396→  thirdParty   ThirdParty? @relation(fields: [thirdPartyId], references: [id], onDelete: SetNull)
+   397→  status       String    @default("OPEN") // OPEN | SUSPENDED | CLOSED
+   398→  startDate    DateTime?
+   399→  endDate      DateTime?
+   400→  budget       Float     @default(0)
+   401→  createdAt    DateTime  @default(now())
+   402→  updatedAt    DateTime  @updatedAt
+   403→
+   404→  tasks Task[]
+   405→
+   406→  @@unique([tenantId, ref])
+   407→  @@index([tenantId])
+   408→}
+   409→
+   410→model Task {
+   411→  id           String  @id @default(cuid())
+   412→  tenantId     String  @default("t_demo")
+   413→  projectId    String
+   414→  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+   415→  ref          String  // TSyymm-#### — unique per tenant
+   416→  label        String
+   417→  description  String?
+   418→  status       String  @default("TODO") // TODO | IN_PROGRESS | DONE | CANCELLED
+   419→  priority     String  @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
+   420→  progress     Int     @default(0) // 0..100
+   421→  plannedHours Float   @default(0)
+   422→  startDate    DateTime?
+   423→  endDate      DateTime?
+   424→  createdAt    DateTime @default(now())
+   425→  updatedAt    DateTime @updatedAt
+   426→
+   427→  timeEntries TimeEntry[]
+   428→
+   429→  @@unique([tenantId, ref])
+   430→  @@index([tenantId])
+   431→}
+   432→
+   433→model TimeEntry {
+   434→  id         String   @id @default(cuid())
+   435→  taskId     String
+   436→  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+   437→  employeeId String?
+   438→  employee   Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+   439→  date       DateTime @default(now())
+   440→  hours      Float
+   441→  note       String?
+   442→  createdAt  DateTime @default(now())
+   443→}
+   444→
+   445→// ---------------------------------------------------------------------------
+   446→// Support — Tickets (Help Desk)
+   447→// ---------------------------------------------------------------------------
+   448→model Ticket {
+   449→  id           String   @id @default(cuid())
+   450→  tenantId     String   @default("t_demo")
+   451→  ref          String   // TKyymm-#### — unique per tenant
+   452→  subject      String
+   453→  thirdPartyId String?
+   454→  thirdParty   ThirdParty? @relation(fields: [thirdPartyId], references: [id], onDelete: SetNull)
+   455→  contactId    String?
+   456→  status       String   @default("NEW") // NEW | ASSIGNED | IN_PROGRESS | RESOLVED | CLOSED
+   457→  priority     String   @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
+   458→  category     String? // SALES | BILLING | TECHNICAL | OTHER
+   459→  assignedTo   String?
+   460→  description  String?
+   461→  resolution   String?
+   462→  createdAt    DateTime @default(now())
+   463→  updatedAt    DateTime @updatedAt
+   464→
+   465→  messages TicketMessage[]
+   466→
+   467→  @@unique([tenantId, ref])
+   468→  @@index([tenantId])
+   469→}
+   470→
+   471→model TicketMessage {
+   472→  id         String   @id @default(cuid())
+   473→  ticketId   String
+   474→  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+   475→  author     String
+   476→  content    String
+   477→  isInternal Boolean  @default(false)
+   478→  createdAt  DateTime @default(now())
+   479→}
+   480→
+   481→// ---------------------------------------------------------------------------
+   482→// Knowledge Base
+   483→// ---------------------------------------------------------------------------
+   484→model KnowledgeArticle {
+   485→  id        String   @id @default(cuid())
+   486→  tenantId  String   @default("t_demo")
+   487→  title     String
+   488→  category  String   @default("General")
+   489→  content   String
+   490→  status    String   @default("DRAFT") // DRAFT | PUBLISHED | ARCHIVED
+   491→  views     Int      @default(0)
+   492→  createdAt DateTime @default(now())
+   493→  updatedAt DateTime @updatedAt
+   494→}
+   495→
+   496→// ---------------------------------------------------------------------------
+   497→// HR — Employees, Leave, Expenses
+   498→// ---------------------------------------------------------------------------
+   499→model Employee {
+   500→  id           String    @id @default(cuid())
+   501→  tenantId     String    @default("t_demo")
+   502→  employeeCode String // EM0001 — unique per tenant
+   503→  firstName    String
+   504→  lastName     String
+   505→  email        String?
+   506→  phone        String?
+   507→  position     String?
+   508→  department   String?
+   509→  hireDate     DateTime?
+   510→  salary       Float     @default(0)
+   511→  status       String    @default("ACTIVE") // ACTIVE | SUSPENDED
+   512→  createdAt    DateTime  @default(now())
+   513→  updatedAt    DateTime  @updatedAt
+   514→
+   515→  leaveRequests  LeaveRequest[]
+   516→  expenseReports ExpenseReport[]
+   517→  timeEntries    TimeEntry[]
+   518→
+   519→  @@unique([tenantId, employeeCode])
+   520→  @@index([tenantId])
+   521→}
+   522→
+   523→model LeaveRequest {
+   524→  id         String   @id @default(cuid())
+   525→  tenantId   String   @default("t_demo")
+   526→  employeeId String
+   527→  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+   528→  type       String   @default("PAID") // PAID | SICK | UNPAID | OTHER
+   529→  startDate  DateTime
+   530→  endDate    DateTime
+   531→  days       Float
+   532→  reason     String?
+   533→  status     String   @default("PENDING") // PENDING | APPROVED | REJECTED | CANCELLED
+   534→  createdAt  DateTime @default(now())
+   535→}
+   536→
+   537→model ExpenseReport {
+   538→  id         String   @id @default(cuid())
+   539→  tenantId   String   @default("t_demo")
+   540→  ref        String   // ERyymm-#### — unique per tenant
+   541→  employeeId String
+   542→  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+   543→  status     String   @default("DRAFT") // DRAFT | SUBMITTED | APPROVED | REJECTED | PAID
+   544→  date       DateTime @default(now())
+   545→  notes      String?
+   546→  total      Float    @default(0)
+   547→  createdAt  DateTime @default(now())
+   548→  updatedAt  DateTime @updatedAt
+   549→
+   550→  lines ExpenseLine[]
+   551→
+   552→  @@unique([tenantId, ref])
+   553→  @@index([tenantId])
+   554→}
+   555→
+   556→model ExpenseLine {
+   557→  id       String  @id @default(cuid())
+   558→  reportId String
+   559→  report   ExpenseReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+   560→  category String  @default("TRAVEL") // MEAL | TRAVEL | HOTEL | SUPPLIES | OTHER
+   561→  date     DateTime @default(now())
+   562→  amount   Float
+   563→  note     String?
+   564→}
+   565→
+   566→// ---------------------------------------------------------------------------
+   567→// Finance — Bank accounts & transactions
+   568→// ---------------------------------------------------------------------------
+   569→model BankAccount {
+   570→  id             String  @id @default(cuid())
+   571→  tenantId       String  @default("t_demo")
+   572→  name           String
+   573→  bank           String?
+   574→  accountNumber  String?
+   575→  currency       String  @default("USD")
+   576→  type           String  @default("BANK") // BANK | CASH
+   577→  openingBalance Float   @default(0)
+   578→  currentBalance Float   @default(0)
+   579→  createdAt      DateTime @default(now())
+   580→
+   581→  transactions BankTransaction[]
+   582→
+   583→  @@index([tenantId])
+   584→}
+   585→
+   586→model BankTransaction {
+   587→  id           String   @id @default(cuid())
+   588→  tenantId     String   @default("t_demo")
+   589→  accountId    String
+   590→  account      BankAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+   591→  date         DateTime @default(now())
+   592→  label        String
+   593→  amount       Float // signed: positive = credit, negative = debit
+   594→  category     String? // SALES | PURCHASES | SALARIES | EXPENSES | TRANSFER | OTHER
+   595→  reference    String?
+   596→  reconciled   Boolean  @default(false)
+   597→  createdAt    DateTime @default(now())
+   598→}
+   599→
+   600→// ---------------------------------------------------------------------------
+   601→// Settings (key-value app configuration) & printable document templates
+   602→// ---------------------------------------------------------------------------
+   603→model Setting {
+   604→  id        String   @id @default(cuid())
+   605→  tenantId  String   @default("t_demo")
+   606→  key       String // e.g. "company.name", "sales.defaultVatRate" — unique per tenant
+   607→  value     String
+   608→  updatedAt DateTime @updatedAt
+   609→
+   610→  @@unique([tenantId, key])
+   611→  @@index([tenantId])
+   612→}
+   613→
+   614→model DocTemplate {
+   615→  id        String   @id @default(cuid())
+   616→  tenantId  String   @default("t_demo")
+   617→  name      String
+   618→  type      String // INVOICE | RECEIPT | PROPOSAL | ORDER | SUPPLIER_INVOICE
+   619→  isDefault Boolean  @default(false)
+   620→  config    String   @default("{}") // JSON blob validated by zod (see src/lib/template-schema.ts)
+   621→  createdAt DateTime @default(now())
+   622→  updatedAt DateTime @updatedAt
+   623→}
+   624→
+   625→// ---------------------------------------------------------------------------
+   626→// Productivity — Agenda (calendar)
+   627→// ---------------------------------------------------------------------------
+   628→model AgendaEvent {
+   629→  id           String    @id @default(cuid())
+   630→  tenantId     String    @default("t_demo")
+   631→  title        String
+   632→  description  String?
+   633→  type         String    @default("MEETING") // MEETING | CALL | TASK | REMINDER | OTHER
+   634→  start        DateTime
+   635→  end          DateTime?
+   636→  allDay       Boolean   @default(false)
+   637→  location     String?
+   638→  thirdPartyId String?
+   639→  thirdParty   ThirdParty? @relation(fields: [thirdPartyId], references: [id], onDelete: SetNull)
+   640→  projectId    String?
+   641→  owner        String?
+   642→  createdAt    DateTime  @default(now())
+   643→
+   644→  @@index([tenantId])
+   645→}
+   646→
+   647→// ---------------------------------------------------------------------------
+   648→// Multi-tenancy, authentication & role-based access control (RBAC)
+   649→// ---------------------------------------------------------------------------
+   650→model Tenant {
+   651→  id        String   @id @default(cuid())
+   652→  name      String
+   653→  createdAt DateTime @default(now())
+   654→
+   655→  users User[]
+   656→  roles Role[]
+   657→}
+   658→
+   659→model Role {
+   660→  id          String   @id @default(cuid())
+   661→  tenantId    String
+   662→  name        String
+   663→  description String?
+   664→  permissions String   @default("[]") // JSON array of "<module>.<action>" strings; "*" = everything
+   665→  isSystem    Boolean  @default(false) // seeded roles: name locked, delete forbidden
+   666→  createdAt   DateTime @default(now())
+   667→
+   668→  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+   669→  users  User[]
+   670→
+   671→  @@unique([tenantId, name])
+   672→  @@index([tenantId])
+   673→}
+   674→
+   675→model User {
+   676→  id           String    @id @default(cuid())
+   677→  tenantId     String
+   678→  email        String    @unique // login identifier — globally unique
+   679→  passwordHash String // scrypt: "s1:<salt>:<hash>" (see src/lib/password.ts)
+   680→  name         String
+   681→  roleId       String?
+   682→  status       String    @default("ACTIVE") // ACTIVE | DISABLED
+   683→  lastLoginAt  DateTime?
+   684→  createdAt    DateTime  @default(now())
+   685→
+   686→  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+   687→  role     Role?     @relation(fields: [roleId], references: [id], onDelete: SetNull)
+   688→  sessions Session[]
+   689→
+   690→  @@index([tenantId])
+   691→}
+   692→
+   693→model Session {
+   694→  id        String   @id // opaque random token stored in an httpOnly cookie
+   695→  userId    String
+   696→  expiresAt DateTime
+   697→  createdAt DateTime @default(now())
+   698→
+   699→  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+   700→
+   701→  @@index([userId])
+   702→}
+   703→
+   704→// ---------------------------------------------------------------------------
+   705→// Buy Me a Coffee — supporter page config (incl. uploaded KHQR payment QR)
+   706→// and a log of support received. One page per tenant; supports are per tenant.
+   707→// ---------------------------------------------------------------------------
+   708→model CoffeePage {
+   709→  id            String   @id @default(cuid())
+   710→  tenantId      String   @unique // exactly one coffee page per tenant
+   711→  displayName   String   @default("Buy me a coffee")
+   712→  tagline       String   @default("If my work makes your day easier, a coffee is a wonderful thank-you.")
+   713→  currency      String   @default("USD") // USD | KHR (KHQR supports both)
+   714→  presetAmounts String   @default("1,3,5,10") // comma-separated positive numbers
+   715→  khqrImage     String?  // uploaded KHQR image as data URL (png/jpeg/webp, <= 2 MB)
+   716→  khqrName      String?  // account holder name shown under the QR
+   717→  khqrBank      String?  // bank / app label e.g. "Bakong · ACLEDA"
+   718→  updatedAt     DateTime @updatedAt
+   719→
+   720→  @@index([tenantId])
+   721→}
+   722→
+   723→model CoffeeSupport {
+   724→  id        String   @id @default(cuid())
+   725→  tenantId  String
+   726→  name      String
+   727→  amount    Float
+   728→  currency  String   @default("USD") // USD | KHR — currency of the received payment
+   729→  message   String?
+   730→  date      DateTime @default(now())
+   731→  createdAt DateTime @default(now())
+   732→
+   733→  @@index([tenantId])
+   734→}
+   735→

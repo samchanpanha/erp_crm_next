@@ -117,7 +117,7 @@ export default function Dashboard() {
 
       {/* Charts */}
       <div className="grid gap-4 lg:grid-cols-5">
-        <Card className="lg:col-span-3">
+        <Card className="min-w-0 lg:col-span-3">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Revenue vs purchases — last 6 months</CardTitle>
           </CardHeader>
@@ -139,7 +139,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-2">
+        <Card className="min-w-0 lg:col-span-2">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Invoices by status</CardTitle>
           </CardHeader>
@@ -174,7 +174,7 @@ export default function Dashboard() {
 
       {/* Watchlists */}
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card>
+        <Card className="min-w-0">
           <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <Receipt className="h-4 w-4 text-primary" /> Unpaid invoices
@@ -202,7 +202,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <TriangleAlert className="h-4 w-4 text-amber-500" /> Low stock alerts
@@ -232,7 +232,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <CalendarDays className="h-4 w-4 text-primary" /> Upcoming agenda
@@ -262,7 +262,7 @@ export default function Dashboard() {
 
       {/* Recent activity */}
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
+        <Card className="min-w-0">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Latest invoices</CardTitle>
           </CardHeader>
@@ -288,7 +288,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Latest tickets</CardTitle>
           </CardHeader>

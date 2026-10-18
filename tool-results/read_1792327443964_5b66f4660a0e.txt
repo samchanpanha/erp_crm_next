@@ -1,0 +1,975 @@
+     1→'use client'
+     2→
+     3→import { useState } from 'react'
+     4→import { useQuery, useQueryClient } from '@tanstack/react-query'
+     5→import { format } from 'date-fns'
+     6→import { toast } from 'sonner'
+     7→import {
+     8→  CalendarDays, Coffee, Coins, Download, HeartHandshake, ImagePlus, Loader2,
+     9→  Pencil, Plus, QrCode, ShieldCheck, Trash2, Users,
+    10→} from 'lucide-react'
+    11→import { Button } from '@/components/ui/button'
+    12→import { Input } from '@/components/ui/input'
+    13→import { Label } from '@/components/ui/label'
+    14→import { Textarea } from '@/components/ui/textarea'
+    15→import { Badge } from '@/components/ui/badge'
+    16→import { Skeleton } from '@/components/ui/skeleton'
+    17→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+    18→import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+    19→import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+    20→import {
+    21→  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    22→} from '@/components/ui/dialog'
+    23→import {
+    24→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    25→} from '@/components/ui/select'
+    26→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+    27→import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
+    28→import { fetchApi as api } from '@/components/erp/lib/api'
+    29→import {
+    30→  fetchCoffeePage, putCoffeePage, KhqrPanel, ScanSteps,
+    31→  MAX_IMAGE_BYTES, SYMBOL, money, parsePresets, initials, readFileAsDataUrl,
+    32→  khqrFileExtension, downloadDataUrl, scrollbarCls,
+    33→  type Currency, type CoffeePageCfg, type CoffeeSupportRow, type CoffeePayload,
+    34→} from '@/components/erp/shared/coffee-qr'
+    35→import { canEdit, isSuperAdmin } from '@/lib/permissions'
+    36→import { useAuthStore } from '@/lib/auth-store'
+    37→import { cn } from '@/lib/utils'
+    38→
+    39→// ---------------------------------------------------------------------------
+    40→// Module
+    41→// ---------------------------------------------------------------------------
+    42→export default function CoffeeModule() {
+    43→  const user = useAuthStore((s) => s.user)
+    44→  const mayEdit = user ? canEdit(user.permissions, 'coffee') : false
+    45→  // Super administrator only — the KHQR image must belong to the account owner.
+    46→  const mayUpload = user ? isSuperAdmin(user.permissions) : false
+    47→  const [tab, setTab] = useState('page')
+    48→  const queryClient = useQueryClient()
+    49→
+    50→  const q = useQuery({ queryKey: ['coffee'], queryFn: fetchCoffeePage })
+    51→
+    52→  // Shared config saver — writes the page config and refreshes the cache.
+    53→  const [savingPage, setSavingPage] = useState(false)
+    54→  async function savePage(patch: Record<string, unknown>, successMsg: string): Promise<boolean> {
+    55→    setSavingPage(true)
+    56→    try {
+    57→      const page = await putCoffeePage(patch)
+    58→      queryClient.setQueryData<CoffeePayload>(['coffee'], (old) =>
+    59→        old ? { ...old, page } : old,
+    60→      )
+    61→      toast.success(successMsg)
+    62→      return true
+    63→    } catch (err) {
+    64→      toast.error(err instanceof Error ? err.message : 'Failed to save the coffee page')
+    65→      return false
+    66→    } finally {
+    67→      setSavingPage(false)
+    68→    }
+    69→  }
+    70→
+    71→  // KHQR image upload / removal — saved immediately (server config is the base).
+    72→  const [uploading, setUploading] = useState(false)
+    73→  async function handleImageFile(file: File) {
+    74→    if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) {
+    75→      toast.error('Only PNG, JPG or WebP images are supported.')
+    76→      return
+    77→    }
+    78→    if (file.size > MAX_IMAGE_BYTES) {
+    79→      toast.error('Image is too large — the maximum size is 2 MB.')
+    80→      return
+    81→    }
+    82→    setUploading(true)
+    83→    try {
+    84→      const dataUrl = await readFileAsDataUrl(file)
+    85→      await savePage({ khqrImage: dataUrl }, 'KHQR image uploaded')
+    86→    } catch {
+    87→      toast.error('Could not read that file — please try another image.')
+    88→    } finally {
+    89→      setUploading(false)
+    90→    }
+    91→  }
+    92→  async function removeImage() {
+    93→    setUploading(true)
+    94→    try {
+    95→      await savePage({ khqrImage: null }, 'KHQR image removed')
+    96→    } finally {
+    97→      setUploading(false)
+    98→    }
+    99→  }
+   100→
+   101→  // Support log mutations
+   102→  const [deletingId, setDeletingId] = useState<string | null>(null)
+   103→  async function deleteSupport(id: string) {
+   104→    setDeletingId(id)
+   105→    try {
+   106→      await api(`/api/coffee/supports/${id}`, { method: 'DELETE' })
+   107→      toast.success('Support entry removed')
+   108→      await queryClient.invalidateQueries({ queryKey: ['coffee'] })
+   109→    } catch (err) {
+   110→      toast.error(err instanceof Error ? err.message : 'Failed to delete the support entry')
+   111→    } finally {
+   112→      setDeletingId(null)
+   113→    }
+   114→  }
+   115→  async function addSupport(body: {
+   116→    name: string
+   117→    amount: number
+   118→    currency: Currency
+   119→    message: string | null
+   120→    date: string
+   121→  }): Promise<boolean> {
+   122→    try {
+   123→      await api('/api/coffee/supports', { method: 'POST', body: JSON.stringify(body) })
+   124→      toast.success('Support recorded — it now shows on your page')
+   125→      await queryClient.invalidateQueries({ queryKey: ['coffee'] })
+   126→      return true
+   127→    } catch (err) {
+   128→      toast.error(err instanceof Error ? err.message : 'Failed to record the support')
+   129→      return false
+   130→    }
+   131→  }
+   132→
+   133→  const page = q.data?.page
+   134→  const supporters = q.data?.supporters ?? []
+   135→
+   136→  return (
+   137→    <div className="space-y-6">
+   138→      <PageHeader
+   139→        title="Buy Me a Coffee"
+   140→        description="A friendly supporter page with your KHQR payment QR — scan to send a coffee."
+   141→        icon={Coffee}
+   142→        actions={
+   143→          page ? (
+   144→            page.khqrImage ? (
+   145→              <Badge variant="outline" className="gap-1.5 border-emerald-600/30 text-emerald-700 dark:text-emerald-400">
+   146→                <QrCode className="h-3.5 w-3.5" aria-hidden="true" />
+   147→                KHQR ready
+   148→              </Badge>
+   149→            ) : (
+   150→              <Badge variant="outline" className="gap-1.5 border-amber-600/40 text-amber-700 dark:text-amber-400">
+   151→                <QrCode className="h-3.5 w-3.5" aria-hidden="true" />
+   152→                QR not set yet
+   153→              </Badge>
+   154→            )
+   155→          ) : undefined
+   156→        }
+   157→      />
+   158→
+   159→      {q.isLoading && (
+   160→        <div className="space-y-4">
+   161→          <Skeleton className="h-64 w-full rounded-xl" />
+   162→          <div className="grid gap-4 sm:grid-cols-2">
+   163→            <Skeleton className="h-40 rounded-xl" />
+   164→            <Skeleton className="h-40 rounded-xl" />
+   165→          </div>
+   166→        </div>
+   167→      )}
+   168→
+   169→      {q.isError && (
+   170→        <Alert variant="destructive">
+   171→          <Coffee className="h-4 w-4" aria-hidden="true" />
+   172→          <AlertTitle>Failed to load the coffee page</AlertTitle>
+   173→          <AlertDescription>{(q.error as Error).message}</AlertDescription>
+   174→          <Button variant="outline" size="sm" className="mt-3 w-fit" onClick={() => void q.refetch()}>
+   175→            Retry
+   176→          </Button>
+   177→        </Alert>
+   178→      )}
+   179→
+   180→      {q.isSuccess && page && (
+   181→        <Tabs value={tab} onValueChange={setTab}>
+   182→          <TabsList className="w-full justify-start overflow-x-auto sm:w-auto">
+   183→            <TabsTrigger value="page" className="gap-1.5">
+   184→              <Coffee className="h-4 w-4" aria-hidden="true" />
+   185→              Coffee page
+   186→            </TabsTrigger>
+   187→            <TabsTrigger value="settings" className="gap-1.5">
+   188→              <ImagePlus className="h-4 w-4" aria-hidden="true" />
+   189→              Settings
+   190→            </TabsTrigger>
+   191→            <TabsTrigger value="log" className="gap-1.5">
+   192→              <HeartHandshake className="h-4 w-4" aria-hidden="true" />
+   193→              Support log
+   194→            </TabsTrigger>
+   195→          </TabsList>
+   196→
+   197→          <TabsContent value="page" className="mt-4">
+   198→            <CoffeePageView
+   199→              key={page.updatedAt ?? 'default'}
+   200→              page={page}
+   201→              supporters={supporters}
+   202→              mayUpload={mayUpload}
+   203→              onGoSettings={() => setTab('settings')}
+   204→            />
+   205→          </TabsContent>
+   206→
+   207→          <TabsContent value="settings" className="mt-4">
+   208→            <CoffeeSettingsTab
+   209→              key={page.updatedAt ?? 'default'}
+   210→              page={page}
+   211→              savingPage={savingPage}
+   212→              uploading={uploading}
+   213→              mayEdit={mayEdit}
+   214→              mayUpload={mayUpload}
+   215→              onImageFile={(f) => void handleImageFile(f)}
+   216→              onRemoveImage={() => void removeImage()}
+   217→              onSavePatch={(patch, msg) => savePage(patch, msg)}
+   218→            />
+   219→          </TabsContent>
+   220→
+   221→          <TabsContent value="log" className="mt-4">
+   222→            <SupportLogTab
+   223→              page={page}
+   224→              supporters={supporters}
+   225→              mayEdit={mayEdit}
+   226→              onAdd={addSupport}
+   227→              onDelete={deleteSupport}
+   228→              deletingId={deletingId}
+   229→            />
+   230→          </TabsContent>
+   231→        </Tabs>
+   232→      )}
+   233→    </div>
+   234→  )
+   235→}
+   236→
+   237→// ---------------------------------------------------------------------------
+   238→// Coffee page tab — the supporter-facing view
+   239→// ---------------------------------------------------------------------------
+   240→function CoffeePageView({
+   241→  page, supporters, mayUpload, onGoSettings,
+   242→}: {
+   243→  page: CoffeePageCfg
+   244→  supporters: CoffeeSupportRow[]
+   245→  mayUpload: boolean
+   246→  onGoSettings: () => void
+   247→}) {
+   248→  const presets = parsePresets(page.presetAmounts)
+   249→  const [selected, setSelected] = useState<number | null>(presets[0] ?? null)
+   250→  const [custom, setCustom] = useState('')
+   251→  const [payOpen, setPayOpen] = useState(false)
+   252→
+   253→  const customNum = custom.trim() === '' ? NaN : Number(custom)
+   254→  const payAmount = Number.isFinite(customNum) && customNum > 0 ? customNum : selected
+   255→  const total = supporters
+   256→    .filter((s) => s.currency === page.currency)
+   257→    .reduce((sum, s) => sum + s.amount, 0)
+   258→  const otherCurrencyCount = supporters.filter((s) => s.currency !== page.currency).length
+   259→
+   260→  return (
+   261→    <div className="space-y-6">
+   262→      {/* Hero */}
+   263→      <Card className="overflow-hidden border-amber-600/20">
+   264→        <div className="bg-gradient-to-br from-amber-500/15 via-orange-500/10 to-transparent px-6 py-10 text-center">
+   265→          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500/20 text-amber-700 dark:text-amber-400 shadow-inner">
+   266→            <Coffee className="h-8 w-8" aria-hidden="true" />
+   267→          </div>
+   268→          <h2 className="mt-4 text-2xl font-extrabold tracking-tight sm:text-3xl">{page.displayName}</h2>
+   269→          <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">{page.tagline}</p>
+   270→          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+   271→            <Badge variant="outline" className="gap-1.5 bg-background/70">
+   272→              <Users className="h-3.5 w-3.5" aria-hidden="true" />
+   273→              {supporters.length} {supporters.length === 1 ? 'supporter' : 'supporters'}
+   274→            </Badge>
+   275→            <Badge variant="outline" className="gap-1.5 bg-background/70">
+   276→              <Coins className="h-3.5 w-3.5" aria-hidden="true" />
+   277→              {money(total, page.currency)} raised
+   278→            </Badge>
+   279→            {otherCurrencyCount > 0 && (
+   280→              <Badge variant="outline" className="bg-background/70">
+   281→                + {otherCurrencyCount} in other currencies
+   282→              </Badge>
+   283→            )}
+   284→          </div>
+   285→        </div>
+   286→
+   287→        <CardContent className="flex flex-col items-center gap-4 pt-6">
+   288→          {presets.length > 0 && (
+   289→            <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Preset amounts">
+   290→              {presets.map((n) => (
+   291→                <Button
+   292→                  key={n}
+   293→                  type="button"
+   294→                  variant={selected === n ? 'default' : 'outline'}
+   295→                  aria-pressed={selected === n}
+   296→                  onClick={() => { setSelected(n); setCustom('') }}
+   297→                  className={cn(
+   298→                    'min-h-11 gap-1.5',
+   299→                    selected === n ? 'bg-amber-600 hover:bg-amber-700' : 'hover:border-amber-600/40',
+   300→                  )}
+   301→                >
+   302→                  <Coffee className="h-4 w-4" aria-hidden="true" />
+   303→                  {money(n, page.currency)}
+   304→                </Button>
+   305→              ))}
+   306→            </div>
+   307→          )}
+   308→
+   309→          <div className="flex flex-col items-center gap-3 sm:flex-row">
+   310→            <div className="relative w-44">
+   311→              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground" aria-hidden="true">
+   312→                {SYMBOL[page.currency]}
+   313→              </span>
+   314→              <Input
+   315→                type="number"
+   316→                min="0"
+   317→                step="any"
+   318→                placeholder="Custom amount"
+   319→                aria-label={`Custom amount in ${page.currency}`}
+   320→                className="min-h-11 pl-8"
+   321→                value={custom}
+   322→                onChange={(e) => setCustom(e.target.value)}
+   323→              />
+   324→            </div>
+   325→            <Button
+   326→              type="button"
+   327→              disabled={!payAmount || payAmount <= 0}
+   328→              onClick={() => setPayOpen(true)}
+   329→              className="min-h-11 gap-2 bg-amber-600 text-white hover:bg-amber-700"
+   330→            >
+   331→              <Coffee className="h-4 w-4" aria-hidden="true" />
+   332→              Buy me a coffee{payAmount ? ` · ${money(payAmount, page.currency)}` : ''}
+   333→            </Button>
+   334→          </div>
+   335→          <p className="text-xs text-muted-foreground">Payments run through KHQR — scan with any supported banking app.</p>
+   336→        </CardContent>
+   337→      </Card>
+   338→
+   339→      {/* KHQR card */}
+   340→      <Card>
+   341→        <CardHeader>
+   342→          <CardTitle className="flex items-center gap-2 text-base">
+   343→            <QrCode className="h-4 w-4 text-amber-600" aria-hidden="true" />
+   344→            KHQR payment
+   345→          </CardTitle>
+   346→          <CardDescription>Scan with any KHQR-supported app (Bakong, ACLEDA, ABA, Wing…)</CardDescription>
+   347→        </CardHeader>
+   348→        <CardContent>
+   349→          {page.khqrImage ? (
+   350→            <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
+   351→              <KhqrPanel
+   352→                src={page.khqrImage}
+   353→                alt={`KHQR payment QR code for ${page.khqrName ?? page.displayName}`}
+   354→                size="sm"
+   355→              />
+   356→              <div className="min-w-0 flex-1 space-y-1.5 text-center sm:text-left">
+   357→                {page.khqrName && (
+   358→                  <p className="text-sm"><span className="font-medium">Account:</span> {page.khqrName}</p>
+   359→                )}
+   360→                {page.khqrBank && (
+   361→                  <p className="text-sm"><span className="font-medium">Bank:</span> {page.khqrBank}</p>
+   362→                )}
+   363→                <p className="text-xs text-muted-foreground">
+   364→                  KHQR is Cambodia&apos;s unified QR standard — one code works across all participating banks.
+   365→                </p>
+   366→                <Button
+   367→                  type="button"
+   368→                  variant="outline"
+   369→                  size="sm"
+   370→                  className="mt-2 gap-2"
+   371→                  onClick={() => downloadDataUrl(page.khqrImage!, `khqr-${page.khqrName ? page.khqrName.toLowerCase().replace(/\s+/g, '-') : 'code'}.${khqrFileExtension(page.khqrImage!)}`)}
+   372→                >
+   373→                  <Download className="h-4 w-4" aria-hidden="true" />
+   374→                  Download QR
+   375→                </Button>
+   376→              </div>
+   377→            </div>
+   378→          ) : (
+   379→            <EmptyState
+   380→              icon={QrCode}
+   381→              title="No KHQR code uploaded yet"
+   382→              description={
+   383→                mayUpload
+   384→                  ? 'Upload your KHQR payment image in Settings and it will appear here for supporters to scan.'
+   385→                  : 'Only the super administrator can upload the KHQR payment image — it will appear here once added.'
+   386→              }
+   387→              actionLabel={mayUpload ? 'Open Settings' : undefined}
+   388→              onAction={mayUpload ? onGoSettings : undefined}
+   389→            />
+   390→          )}
+   391→        </CardContent>
+   392→      </Card>
+   393→
+   394→      {/* Supporters wall */}
+   395→      {supporters.length > 0 && (
+   396→        <Card>
+   397→          <CardHeader>
+   398→            <CardTitle className="flex items-center gap-2 text-base">
+   399→              <HeartHandshake className="h-4 w-4 text-amber-600" aria-hidden="true" />
+   400→              Recent supporters
+   401→            </CardTitle>
+   402→            <CardDescription>Thank you to everyone who bought a coffee</CardDescription>
+   403→          </CardHeader>
+   404→          <CardContent className="grid gap-3 sm:grid-cols-2">
+   405→            {supporters.slice(0, 12).map((s) => (
+   406→              <div key={s.id} className="flex items-start gap-3 rounded-lg border p-3">
+   407→                <Avatar className="h-9 w-9 shrink-0">
+   408→                  <AvatarFallback className="bg-amber-500/15 text-amber-700 text-xs font-semibold dark:text-amber-400">
+   409→                    {initials(s.name)}
+   410→                  </AvatarFallback>
+   411→                </Avatar>
+   412→                <div className="min-w-0 flex-1">
+   413→                  <div className="flex items-baseline justify-between gap-2">
+   414→                    <p className="truncate text-sm font-medium">{s.name}</p>
+   415→                    <Badge variant="outline" className="shrink-0 border-amber-600/30 text-amber-700 dark:text-amber-400">
+   416→                      {money(s.amount, s.currency)}
+   417→                    </Badge>
+   418→                  </div>
+   419→                  {s.message && <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{s.message}</p>}
+   420→                  <p className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+   421→                    <CalendarDays className="h-3 w-3" aria-hidden="true" />
+   422→                    {format(new Date(s.date), 'MMM d, yyyy')}
+   423→                  </p>
+   424→                </div>
+   425→              </div>
+   426→            ))}
+   427→          </CardContent>
+   428→        </Card>
+   429→      )}
+   430→
+   431→      {/* Pay dialog */}
+   432→      <Dialog open={payOpen} onOpenChange={setPayOpen}>
+   433→        <DialogContent className="sm:max-w-md">
+   434→          <DialogHeader>
+   435→            <DialogTitle className="flex items-center gap-2">
+   436→              <Coffee className="h-5 w-5 text-amber-600" aria-hidden="true" />
+   437→              Buy me a coffee{payAmount ? ` · ${money(payAmount, page.currency)}` : ''}
+   438→            </DialogTitle>
+   439→            <DialogDescription>
+   440→              Scan this KHQR code with your banking app to send {payAmount ? money(payAmount, page.currency) : 'your support'}.
+   441→            </DialogDescription>
+   442→          </DialogHeader>
+   443→
+   444→          {page.khqrImage ? (
+   445→            <div className="flex flex-col items-center gap-4">
+   446→              <KhqrPanel
+   447→                src={page.khqrImage}
+   448→                alt={`KHQR payment QR code for ${page.khqrName ?? page.displayName}`}
+   449→                size="lg"
+   450→              />
+   451→              {(page.khqrName || page.khqrBank) && (
+   452→                <p className="text-center text-sm text-muted-foreground">
+   453→                  {[page.khqrName, page.khqrBank].filter(Boolean).join(' · ')}
+   454→                </p>
+   455→              )}
+   456→              <ScanSteps />
+   457→            </div>
+   458→          ) : (
+   459→            <EmptyState
+   460→              icon={QrCode}
+   461→              title="No KHQR code yet"
+   462→              description={
+   463→                mayUpload
+   464→                  ? 'Upload your KHQR payment image in Settings first.'
+   465→                  : 'Only the super administrator can upload the KHQR payment image — it will appear here once added.'
+   466→              }
+   467→              actionLabel={mayUpload ? 'Open Settings' : undefined}
+   468→              onAction={mayUpload ? () => { setPayOpen(false); onGoSettings() } : undefined}
+   469→            />
+   470→          )}
+   471→        </DialogContent>
+   472→      </Dialog>
+   473→    </div>
+   474→  )
+   475→}
+   476→
+   477→// ---------------------------------------------------------------------------
+   478→// Settings tab — KHQR upload + page details
+   479→// ---------------------------------------------------------------------------
+   480→function CoffeeSettingsTab({
+   481→  page, savingPage, uploading, mayEdit, mayUpload, onImageFile, onRemoveImage, onSavePatch,
+   482→}: {
+   483→  page: CoffeePageCfg
+   484→  savingPage: boolean
+   485→  uploading: boolean
+   486→  mayEdit: boolean
+   487→  mayUpload: boolean
+   488→  onImageFile: (file: File) => void
+   489→  onRemoveImage: () => void
+   490→  onSavePatch: (patch: Record<string, unknown>, successMsg: string) => Promise<boolean>
+   491→}) {
+   492→  const [displayName, setDisplayName] = useState(page.displayName)
+   493→  const [tagline, setTagline] = useState(page.tagline)
+   494→  const [currency, setCurrency] = useState<Currency>(page.currency)
+   495→  const [presetsInput, setPresetsInput] = useState(page.presetAmounts)
+   496→  const [khqrName, setKhqrName] = useState(page.khqrName ?? '')
+   497→  const [khqrBank, setKhqrBank] = useState(page.khqrBank ?? '')
+   498→
+   499→  async function handleSave() {
+   500→    const name = displayName.trim()
+   501→    if (!name) { toast.error('Display name is required'); return }
+   502→    if (tagline.trim().length > 200) { toast.error('Keep the tagline under 200 characters'); return }
+   503→
+   504→    const parts = presetsInput.split(',').map((p) => p.trim()).filter(Boolean)
+   505→    if (parts.length === 0) { toast.error('Add at least one preset amount, e.g. 1,3,5,10'); return }
+   506→    if (parts.length > 8) { toast.error('Use at most 8 preset amounts'); return }
+   507→    for (const p of parts) {
+   508→      const n = Number(p)
+   509→      if (!Number.isFinite(n) || n <= 0) { toast.error(`"${p}" is not a valid amount`); return }
+   510→    }
+   511→
+   512→    const ok = await onSavePatch(
+   513→      {
+   514→        displayName: name,
+   515→        tagline: tagline.trim(),
+   516→        currency,
+   517→        presetAmounts: parts.join(','),
+   518→        khqrName: khqrName.trim() || null,
+   519→        khqrBank: khqrBank.trim() || null,
+   520→      },
+   521→      'Coffee page saved',
+   522→    )
+   523→    if (ok) setPresetsInput(parts.join(','))
+   524→  }
+   525→
+   526→  return (
+   527→    <div className="grid gap-6 lg:grid-cols-5">
+   528→      {/* KHQR image */}
+   529→      <Card className="lg:col-span-2">
+   530→        <CardHeader>
+   531→          <CardTitle className="flex items-center gap-2 text-base">
+   532→            <QrCode className="h-4 w-4 text-amber-600" aria-hidden="true" />
+   533→            KHQR payment QR
+   534→          </CardTitle>
+   535→          <CardDescription>Your personal QR image from any Cambodian banking app.</CardDescription>
+   536→        </CardHeader>
+   537→        <CardContent className="space-y-4">
+   538→          <div className="flex justify-center">
+   539→            {page.khqrImage ? (
+   540→              <KhqrPanel src={page.khqrImage} alt="Current KHQR payment QR code" size="md" />
+   541→            ) : (
+   542→              <div className="flex h-44 w-44 flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-center text-muted-foreground">
+   543→                <QrCode className="h-8 w-8" aria-hidden="true" />
+   544→                <p className="px-4 text-xs">No QR image yet</p>
+   545→              </div>
+   546→            )}
+   547→          </div>
+   548→
+   549→          {mayUpload && (
+   550→            <>
+   551→              <label className="block">
+   552→                <input
+   553→                  type="file"
+   554→                  accept="image/png,image/jpeg,image/webp"
+   555→                  className="hidden"
+   556→                  aria-label="Upload KHQR image"
+   557→                  onChange={(e) => {
+   558→                    const file = e.target.files?.[0]
+   559→                    e.target.value = ''
+   560→                    if (file) onImageFile(file)
+   561→                  }}
+   562→                />
+   563→                <span
+   564→                  className={cn(
+   565→                    'flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-md bg-amber-600 px-4 text-sm font-medium text-white transition-colors hover:bg-amber-700',
+   566→                    uploading && 'pointer-events-none opacity-70',
+   567→                  )}
+   568→                  aria-busy={uploading}
+   569→                >
+   570→                  {uploading
+   571→                    ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   572→                    : <ImagePlus className="h-4 w-4" aria-hidden="true" />}
+   573→                  {uploading ? 'Uploading…' : page.khqrImage ? 'Replace image' : 'Upload KHQR image'}
+   574→                </span>
+   575→              </label>
+   576→              {page.khqrImage && (
+   577→                <Button
+   578→                  type="button"
+   579→                  variant="outline"
+   580→                  className="w-full min-h-11 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+   581→                  disabled={uploading}
+   582→                  onClick={onRemoveImage}
+   583→                >
+   584→                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+   585→                  Remove image
+   586→                </Button>
+   587→              )}
+   588→            </>
+   589→          )}
+   590→          {!mayUpload && (
+   591→            <p className="flex items-start gap-1.5 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+   592→              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+   593→              Only the super administrator can upload or replace this image.
+   594→            </p>
+   595→          )}
+   596→          <p className="text-xs text-muted-foreground">
+   597→            PNG, JPG or WebP · up to 2 MB · square images work best. Changes are saved immediately.
+   598→          </p>
+   599→        </CardContent>
+   600→      </Card>
+   601→
+   602→      {/* Page details */}
+   603→      <Card className="lg:col-span-3">
+   604→        <CardHeader>
+   605→          <CardTitle className="flex items-center gap-2 text-base">
+   606→            <Pencil className="h-4 w-4 text-amber-600" aria-hidden="true" />
+   607→            Page details
+   608→          </CardTitle>
+   609→          <CardDescription>These details appear on your public coffee page.</CardDescription>
+   610→        </CardHeader>
+   611→        <CardContent className="space-y-4">
+   612→          <div className="grid gap-4 sm:grid-cols-2">
+   613→            <div className="space-y-1.5">
+   614→              <Label htmlFor="coffee-name">Display name</Label>
+   615→              <Input
+   616→                id="coffee-name"
+   617→                value={displayName}
+   618→                maxLength={80}
+   619→                disabled={!mayEdit}
+   620→                onChange={(e) => setDisplayName(e.target.value)}
+   621→                placeholder="Buy me a coffee"
+   622→              />
+   623→            </div>
+   624→            <div className="space-y-1.5">
+   625→              <Label htmlFor="coffee-currency">Currency</Label>
+   626→              <Select value={currency} onValueChange={(v) => setCurrency(v as Currency)} disabled={!mayEdit}>
+   627→                <SelectTrigger id="coffee-currency" className="w-full">
+   628→                  <SelectValue placeholder="Choose a currency" />
+   629→                </SelectTrigger>
+   630→                <SelectContent>
+   631→                  <SelectItem value="USD">USD — US Dollar</SelectItem>
+   632→                  <SelectItem value="KHR">KHR — Cambodian Riel</SelectItem>
+   633→                </SelectContent>
+   634→              </Select>
+   635→            </div>
+   636→          </div>
+   637→
+   638→          <div className="space-y-1.5">
+   639→            <Label htmlFor="coffee-tagline">Tagline</Label>
+   640→            <Textarea
+   641→              id="coffee-tagline"
+   642→              rows={2}
+   643→              maxLength={200}
+   644→              value={tagline}
+   645→              disabled={!mayEdit}
+   646→              onChange={(e) => setTagline(e.target.value)}
+   647→              placeholder="A short thank-you message for supporters"
+   648→            />
+   649→            <p className="text-xs text-muted-foreground">{tagline.length}/200 characters</p>
+   650→          </div>
+   651→
+   652→          <div className="space-y-1.5">
+   653→            <Label htmlFor="coffee-presets">Preset amounts ({SYMBOL[currency]})</Label>
+   654→            <Input
+   655→              id="coffee-presets"
+   656→              value={presetsInput}
+   657→              disabled={!mayEdit}
+   658→              onChange={(e) => setPresetsInput(e.target.value)}
+   659→              placeholder="1,3,5,10"
+   660→              inputMode="decimal"
+   661→            />
+   662→            <p className="text-xs text-muted-foreground">Comma separated, up to 8 amounts — shown as coffee buttons.</p>
+   663→          </div>
+   664→
+   665→          <div className="grid gap-4 sm:grid-cols-2">
+   666→            <div className="space-y-1.5">
+   667→              <Label htmlFor="coffee-khqr-name">KHQR account name</Label>
+   668→              <Input
+   669→                id="coffee-khqr-name"
+   670→                value={khqrName}
+   671→                maxLength={80}
+   672→                disabled={!mayEdit}
+   673→                onChange={(e) => setKhqrName(e.target.value)}
+   674→                placeholder="e.g. DARA CHAN"
+   675→              />
+   676→            </div>
+   677→            <div className="space-y-1.5">
+   678→              <Label htmlFor="coffee-khqr-bank">Bank / app label</Label>
+   679→              <Input
+   680→                id="coffee-khqr-bank"
+   681→                value={khqrBank}
+   682→                maxLength={80}
+   683→                disabled={!mayEdit}
+   684→                onChange={(e) => setKhqrBank(e.target.value)}
+   685→                placeholder="e.g. Bakong · ACLEDA"
+   686→              />
+   687→            </div>
+   688→          </div>
+   689→
+   690→          {mayEdit && (
+   691→            <div className="flex justify-end border-t pt-4">
+   692→              <Button
+   693→                type="button"
+   694→                onClick={() => void handleSave()}
+   695→                disabled={savingPage}
+   696→                aria-busy={savingPage}
+   697→                className="min-h-11 gap-2 bg-amber-600 text-white hover:bg-amber-700"
+   698→              >
+   699→                {savingPage
+   700→                  ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   701→                  : null}
+   702→                {savingPage ? 'Saving…' : 'Save changes'}
+   703→              </Button>
+   704→            </div>
+   705→          )}
+   706→        </CardContent>
+   707→      </Card>
+   708→    </div>
+   709→  )
+   710→}
+   711→
+   712→// ---------------------------------------------------------------------------
+   713→// Support log tab — record KHQR payments received
+   714→// ---------------------------------------------------------------------------
+   715→function SupportLogTab({
+   716→  page, supporters, mayEdit, onAdd, onDelete, deletingId,
+   717→}: {
+   718→  page: CoffeePageCfg
+   719→  supporters: CoffeeSupportRow[]
+   720→  mayEdit: boolean
+   721→  onAdd: (body: { name: string; amount: number; currency: Currency; message: string | null; date: string }) => Promise<boolean>
+   722→  onDelete: (id: string) => Promise<void>
+   723→  deletingId: string | null
+   724→}) {
+   725→  const [addOpen, setAddOpen] = useState(false)
+   726→
+   727→  const total = supporters
+   728→    .filter((s) => s.currency === page.currency)
+   729→    .reduce((sum, s) => sum + s.amount, 0)
+   730→  const otherCurrencyCount = supporters.filter((s) => s.currency !== page.currency).length
+   731→  const latest = supporters[0]
+   732→
+   733→  return (
+   734→    <div className="space-y-4">
+   735→      <div className="grid gap-4 sm:grid-cols-3">
+   736→        <Card>
+   737→          <CardContent className="pt-6">
+   738→            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Total raised</p>
+   739→            <p className="mt-1 text-2xl font-bold">{money(total, page.currency)}</p>
+   740→            {otherCurrencyCount > 0 && (
+   741→              <p className="mt-1 text-xs text-muted-foreground">+ {otherCurrencyCount} entries in other currencies</p>
+   742→            )}
+   743→          </CardContent>
+   744→        </Card>
+   745→        <Card>
+   746→          <CardContent className="pt-6">
+   747→            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Supporters</p>
+   748→            <p className="mt-1 text-2xl font-bold">{supporters.length}</p>
+   749→          </CardContent>
+   750→        </Card>
+   751→        <Card>
+   752→          <CardContent className="pt-6">
+   753→            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Latest support</p>
+   754→            <p className="mt-1 text-sm font-semibold">
+   755→              {latest
+   756→                ? `${latest.name} · ${money(latest.amount, latest.currency)}`
+   757→                : '—'}
+   758→            </p>
+   759→            {latest && (
+   760→              <p className="mt-1 text-xs text-muted-foreground">{format(new Date(latest.date), 'MMM d, yyyy')}</p>
+   761→            )}
+   762→          </CardContent>
+   763→        </Card>
+   764→      </div>
+   765→
+   766→      <Card>
+   767→        <CardHeader className="flex-row items-start justify-between space-y-0">
+   768→          <div>
+   769→            <CardTitle className="flex items-center gap-2 text-base">
+   770→              <HeartHandshake className="h-4 w-4 text-amber-600" aria-hidden="true" />
+   771→              Support received
+   772→            </CardTitle>
+   773→            <CardDescription>
+   774→              Record KHQR payments you receive — they power the supporters wall on your page.
+   775→            </CardDescription>
+   776→          </div>
+   777→          {mayEdit && (
+   778→            <Button type="button" size="sm" className="min-h-11 gap-1.5 bg-amber-600 text-white hover:bg-amber-700" onClick={() => setAddOpen(true)}>
+   779→              <Plus className="h-4 w-4" aria-hidden="true" />
+   780→              <span className="hidden sm:inline">Record support</span>
+   781→            </Button>
+   782→          )}
+   783→        </CardHeader>
+   784→        <CardContent>
+   785→          {supporters.length === 0 ? (
+   786→            <EmptyState
+   787→              icon={HeartHandshake}
+   788→              title="No coffee yet"
+   789→              description={
+   790→                mayEdit
+   791→                  ? 'When someone scans your KHQR and sends a coffee, record it here to thank them on your page.'
+   792→                  : 'No support has been recorded yet.'
+   793→              }
+   794→              actionLabel={mayEdit ? 'Record first support' : undefined}
+   795→              onAction={mayEdit ? () => setAddOpen(true) : undefined}
+   796→            />
+   797→          ) : (
+   798→            <div className={cn('max-h-[480px] space-y-2 overflow-y-auto pr-1', scrollbarCls)}>
+   799→              {supporters.map((s) => (
+   800→                <div key={s.id} className="flex items-center gap-3 rounded-lg border p-3">
+   801→                  <Avatar className="h-9 w-9 shrink-0">
+   802→                    <AvatarFallback className="bg-amber-500/15 text-xs font-semibold text-amber-700 dark:text-amber-400">
+   803→                      {initials(s.name)}
+   804→                    </AvatarFallback>
+   805→                  </Avatar>
+   806→                  <div className="min-w-0 flex-1">
+   807→                    <p className="truncate text-sm font-medium">{s.name}</p>
+   808→                    {s.message && <p className="line-clamp-2 text-xs text-muted-foreground">{s.message}</p>}
+   809→                  </div>
+   810→                  <div className="shrink-0 text-right">
+   811→                    <p className="text-sm font-semibold">{money(s.amount, s.currency)}</p>
+   812→                    <p className="text-xs text-muted-foreground">{format(new Date(s.date), 'MMM d, yyyy')}</p>
+   813→                  </div>
+   814→                  {mayEdit && (
+   815→                    <Button
+   816→                      type="button"
+   817→                      variant="ghost"
+   818→                      size="icon"
+   819→                      className="shrink-0 text-muted-foreground hover:text-destructive"
+   820→                      disabled={deletingId === s.id}
+   821→                      aria-busy={deletingId === s.id}
+   822→                      aria-label={`Delete support entry from ${s.name}`}
+   823→                      onClick={() => void onDelete(s.id)}
+   824→                    >
+   825→                      {deletingId === s.id
+   826→                        ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+   827→                        : <Trash2 className="h-4 w-4" aria-hidden="true" />}
+   828→                    </Button>
+   829→                  )}
+   830→                </div>
+   831→              ))}
+   832→            </div>
+   833→          )}
+   834→        </CardContent>
+   835→      </Card>
+   836→
+   837→      {addOpen && (
+   838→        <AddSupportDialog
+   839→          defaultCurrency={page.currency}
+   840→          onClose={() => setAddOpen(false)}
+   841→          onSubmit={async (body) => {
+   842→            const ok = await onAdd(body)
+   843→            if (ok) setAddOpen(false)
+   844→          }}
+   845→        />
+   846→      )}
+   847→    </div>
+   848→  )
+   849→}
+   850→
+   851→/** Keyed conditional mount (fresh state per open) — add a support log entry. */
+   852→function AddSupportDialog({
+   853→  defaultCurrency, onClose, onSubmit,
+   854→}: {
+   855→  defaultCurrency: Currency
+   856→  onClose: () => void
+   857→  onSubmit: (body: { name: string; amount: number; currency: Currency; message: string | null; date: string }) => Promise<void>
+   858→}) {
+   859→  const [name, setName] = useState('Anonymous')
+   860→  const [amount, setAmount] = useState('')
+   861→  const [currency, setCurrency] = useState<Currency>(defaultCurrency)
+   862→  const [message, setMessage] = useState('')
+   863→  const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
+   864→  const [saving, setSaving] = useState(false)
+   865→
+   866→  async function handleSubmit() {
+   867→    const n = Number(amount)
+   868→    if (!name.trim()) { toast.error('Name is required'); return }
+   869→    if (!Number.isFinite(n) || n <= 0) { toast.error('Enter an amount greater than zero'); return }
+   870→    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { toast.error('Pick a valid date'); return }
+   871→    setSaving(true)
+   872→    try {
+   873→      await onSubmit({
+   874→        name: name.trim(),
+   875→        amount: n,
+   876→        currency,
+   877→        message: message.trim() || null,
+   878→        date,
+   879→      })
+   880→    } finally {
+   881→      setSaving(false)
+   882→    }
+   883→  }
+   884→
+   885→  return (
+   886→    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+   887→      <DialogContent className="sm:max-w-md">
+   888→        <DialogHeader>
+   889→          <DialogTitle>Record support received</DialogTitle>
+   890→          <DialogDescription>
+   891→            Log a coffee payment you received via KHQR scan.
+   892→          </DialogDescription>
+   893→        </DialogHeader>
+   894→        <div className="space-y-4">
+   895→          <div className="grid gap-4 sm:grid-cols-2">
+   896→            <div className="space-y-1.5">
+   897→              <Label htmlFor="support-name">Supporter name</Label>
+   898→              <Input
+   899→                id="support-name"
+   900→                value={name}
+   901→                maxLength={60}
+   902→                onChange={(e) => setName(e.target.value)}
+   903→                placeholder="Anonymous"
+   904→              />
+   905→            </div>
+   906→            <div className="space-y-1.5">
+   907→              <Label htmlFor="support-date">Date</Label>
+   908→              <Input id="support-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+   909→            </div>
+   910→          </div>
+   911→          <div className="grid gap-4 sm:grid-cols-2">
+   912→            <div className="space-y-1.5">
+   913→              <Label htmlFor="support-amount">Amount</Label>
+   914→              <div className="relative">
+   915→                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground" aria-hidden="true">
+   916→                  {SYMBOL[currency]}
+   917→                </span>
+   918→                <Input
+   919→                  id="support-amount"
+   920→                  type="number"
+   921→                  min="0"
+   922→                  step="any"
+   923→                  inputMode="decimal"
+   924→                  className="pl-8"
+   925→                  value={amount}
+   926→                  onChange={(e) => setAmount(e.target.value)}
+   927→                  placeholder="3"
+   928→                />
+   929→              </div>
+   930→            </div>
+   931→            <div className="space-y-1.5">
+   932→              <Label htmlFor="support-currency">Currency</Label>
+   933→              <Select value={currency} onValueChange={(v) => setCurrency(v as Currency)}>
+   934→                <SelectTrigger id="support-currency" className="w-full">
+   935→                  <SelectValue placeholder="Currency" />
+   936→                </SelectTrigger>
+   937→                <SelectContent>
+   938→                  <SelectItem value="USD">USD — US Dollar</SelectItem>
+   939→                  <SelectItem value="KHR">KHR — Cambodian Riel</SelectItem>
+   940→                </SelectContent>
+   941→              </Select>
+   942→            </div>
+   943→          </div>
+   944→          <div className="space-y-1.5">
+   945→            <Label htmlFor="support-message">Message (optional)</Label>
+   946→            <Textarea
+   947→              id="support-message"
+   948→              rows={2}
+   949→              maxLength={200}
+   950→              value={message}
+   951→              onChange={(e) => setMessage(e.target.value)}
+   952→              placeholder="A few kind words from your supporter"
+   953→            />
+   954→          </div>
+   955→        </div>
+   956→        <DialogFooter>
+   957→          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+   958→            Cancel
+   959→          </Button>
+   960→          <Button
+   961→            type="button"
+   962→            onClick={() => void handleSubmit()}
+   963→            disabled={saving}
+   964→            aria-busy={saving}
+   965→            className="gap-2 bg-amber-600 text-white hover:bg-amber-700"
+   966→          >
+   967→            {saving && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+   968→            {saving ? 'Saving…' : 'Record support'}
+   969→          </Button>
+   970→        </DialogFooter>
+   971→      </DialogContent>
+   972→    </Dialog>
+   973→  )
+   974→}
+   975→

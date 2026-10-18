@@ -717,3 +717,30 @@ Stage Summary:
 - The coffee QR is now strictly the owner's: placeholder wiped, upload/replace/remove locked to the super administrator ("*") on both client and server, delegated editors (coffee.edit) can manage page text but get 403 on the image
 - One-click KHQR access lives in the top bar right next to Quick create for every user (scan flow), with upload/remove inline for the super admin — same cache as the coffee module so both views always agree
 - Demo credentials unchanged: admin@dolinext.com / demo123 (super admin) · pat@demo.local / testpass123 (Viewer)
+
+---
+Task ID: 27
+Agent: Main orchestrator (Z.ai Code)
+Task: "now I want to set static for Buy me a coffee" — the coffee KHQR image becomes a STATIC server file
+
+Work Log:
+- Interpretation: the KHQR is no longer a DB data URL — it is ONE fixed static file (public/coffee/khqr.<ext>) set once by the super administrator, served as a plain static URL, surviving DB resets and always the only image shown
+- NEW src/lib/static-khqr.ts (server fs module): findStaticKhqr (scans khqr.png|jpg|jpeg|webp + mtime), staticKhqrUrl (/coffee/khqr.<ext>?v=<mtime> cache-buster), writeStaticKhqr (removes all other variants first → exactly one file), clearStaticKhqr; 2 MB cap + png/jpeg/webp mime whitelist
+- NEW /api/coffee/static-image route: POST FormData(file) + DELETE — both requireAuth + isSuperAdmin("*") else 403 "Only the super administrator can upload/remove the KHQR image."; invalid/empty/GIF/oversized → 400; returns { khqrUrl, updatedAt }
+- /api/coffee/page: GET no longer returns khqrImage — builds page payload with khqrUrl from the static file (defaults when no row); PUT is text-only now and explicitly rejects a khqrImage key with 400 pointing at /api/coffee/static-image (legacy data URLs wiped from DB via updateMany)
+- shared/coffee-qr.tsx: CoffeePageCfg.khqrImage → khqrUrl; new uploadStaticKhqr (FormData via plain fetch + authHeaders, same pattern as importer — browser sets multipart boundary) + removeStaticKhqr + downloadUrl (fetch→blob, iframe-safe) replacing readFileAsDataUrl/downloadDataUrl; khqrFileExtension rewritten for URLs; CoffeeQuickButton dialog (beside Quick create) now displays/uploads/removes/downloads the static image with cache-synced query updates
+- modules/coffee.tsx: upload/remove handlers switched to static endpoints (module Settings + hero + pay dialog + badge all read khqrUrl); Settings card retitled "Static KHQR payment QR" with "saved as one static file that always shows" copy
+- public/coffee/ created (.gitkeep); Next dev serves new files from /public at runtime so the upload appears immediately
+- Verification:
+  * scripts/verify-coffee-static.ts (replaces verify-coffee-rbac.ts): 27/27 — admin POST PNG→200 + static URL served 200; replace across extensions deletes the old variant (404); GIF→400; no-file→400; legacy PUT khqrImage→400 with hint; temp coffee.edit-without-wildcard editor: text PUT 200, image POST/DELETE 403; Viewer GET 200 / PUT+DELETE 403; anon 401×3; DELETE → file gone + khqrUrl null; fixtures cleaned, legacy khqrImage column zeroed
+  * Browser E2E admin: top-bar "Buy me a coffee" beside Quick create → dialog empty state → real file upload via exposed input → <img src="/coffee/khqr.png?v=…"> naturalWidth 120 → Open coffee page → module "KHQR ready" + QR card → Settings tab preview + Replace/Remove → Remove → "QR not set yet" + placeholder; module Settings re-upload works (toast "Static KHQR image saved"); full page reload → image persists (static file); Download QR click OK
+  * Browser E2E Viewer (pat): coffee button visible, Quick create hidden (correct); dialog = "No KHQR image yet" + "Only the super administrator can upload the KHQR image" + ZERO upload/replace/remove controls
+  * FOUND + FIXED pre-existing mobile bug (surfaced at 390px, unrelated to coffee but verified during this task): dashboard grid-child Cards (charts ×2, watchlists ×3, latest invoices/tickets) had min-width:auto — truncate (white-space:nowrap) rows inflated their intrinsic min-content (up to 585px) and stretched the grid track → horizontal overflow at 390px; fix = min-w-0 on the 7 grid-child Cards; re-verified scrollWidth 390 = viewport at 390px and clean 1280px desktop
+  * Coffee dialog itself fits mobile (x=16, w=358 at 390px); icon-only top-bar button on mobile
+  * eslint + tsc clean; dev.log free of 5xx; zero console/page errors
+- Final state: public/coffee/ EMPTY (no image set) — the super administrator uploads their own KHQR via the top-bar dialog or coffee Settings; once set it is static (one file, cache-busted URL, survives reloads/DB changes) until they replace/remove it
+
+Stage Summary:
+- Buy Me a Coffee now runs on a static KHQR image: a single server file, settable/removable ONLY by the super administrator (client-hidden + server-enforced), shown as the only image in the top-bar dialog, coffee page, pay dialog and Settings, with iframe-safe static <img> + fetch→blob download and ?v= cache busting
+- Fixed a real dashboard mobile overflow (grid min-width:auto + nowrap text) with min-w-0 on grid-child cards
+- Demo credentials unchanged: admin@dolinext.com / demo123 (super admin) · pat@demo.local / testpass123 (Viewer)
