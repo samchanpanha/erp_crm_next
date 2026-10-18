@@ -8,6 +8,7 @@
 
 import { useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { authHeaders } from '@/components/erp/lib/session-token'
 import {
   Boxes,
   ChartColumn,
@@ -153,7 +154,7 @@ async function exportXlsx(tab: string, headers: string[], rows: Record<string, u
   const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
   const res = await fetch('/api/export/xlsx', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({
       filename: `report-${tab}-${stamp}.xlsx`,
       sheetName: tab.charAt(0).toUpperCase() + tab.slice(1),

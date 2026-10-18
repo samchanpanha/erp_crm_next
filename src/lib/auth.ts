@@ -1,4 +1,4 @@
-import { cookies } from 'next/headers'
+import { cookies, headers } from 'next/headers'
 import { randomBytes } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
@@ -57,10 +57,28 @@ export function buildUserPayload(user: DbUserWithRelations): SessionUser {
   }
 }
 
-/** Read the session cookie and resolve the logged-in user (or null). */
-export async function getSessionUser(): Promise<SessionUser | null> {
+/**
+ * Extract the session token from the incoming request.
+ * Priority: `Authorization: Bearer <token>` header → session cookie.
+ *
+ * The header matters because the preview panel embeds the app in a cross-site
+ * iframe where browsers block SameSite=Lax cookies; the client then transports
+ * the token via the Authorization header instead.
+ */
+export async function getSessionToken(): Promise<string | null> {
+  const h = await headers()
+  const auth = h.get('authorization')
+  if (auth?.toLowerCase().startsWith('bearer ')) {
+    const token = auth.slice(7).trim()
+    if (token) return token
+  }
   const jar = await cookies()
-  const token = jar.get(SESSION_COOKIE)?.value
+  return jar.get(SESSION_COOKIE)?.value ?? null
+}
+
+/** Read the session token (header or cookie) and resolve the logged-in user (or null). */
+export async function getSessionUser(): Promise<SessionUser | null> {
+  const token = await getSessionToken()
   if (!token) return null
 
   const session = await db.session.findUnique({

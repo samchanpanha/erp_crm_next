@@ -1,13 +1,19 @@
 'use client'
 
+import { authHeaders } from '@/components/erp/lib/session-token'
+
 /**
  * Minimal API client for the ERP SPA.
  * All backend responses follow: { data: T } on success, { error: string } on failure.
+ *
+ * The session token rides in the `Authorization: Bearer` header because the
+ * preview panel embeds the app in a cross-site iframe where cookies are
+ * blocked. (The httpOnly cookie still works as a fallback in normal tabs.)
  */
 export async function fetchApi<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
   })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) {

@@ -46,7 +46,7 @@ export async function POST(req: Request) {
     await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
 
     const { token, expiresAt } = await createSession(user.id)
-    const res = NextResponse.json({ data: { user: buildUserPayload(user) } })
+    const res = NextResponse.json({ data: { user: buildUserPayload(user), token, expiresAt } })
     return setSessionCookie(res, token, expiresAt)
   } catch (err) {
     console.error('POST /api/auth/login failed', err)

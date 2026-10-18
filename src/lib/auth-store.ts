@@ -1,6 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
+import { authHeaders, clearStoredToken, getStoredToken, storeToken } from '@/components/erp/lib/session-token'
 
 /**
  * Session user payload returned by the auth APIs ({ data: { user } } envelope).
@@ -44,7 +45,7 @@ interface AuthState {
 }
 
 interface AuthEnvelope {
-  data?: { user?: SessionUser }
+  data?: { user?: SessionUser; token?: string; expiresAt?: string }
   error?: string
 }
 
@@ -68,10 +69,20 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   init: async () => {
     try {
-      const res = await fetch('/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
+      const res = await fetch('/api/auth/me', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: authHeaders(),
+      })
       const json = await readEnvelope(res)
       const user = res.ok ? sessionFrom(json) : null
-      set(user ? { status: 'authed', user } : { status: 'anon', user: null })
+      if (user) {
+        set({ status: 'authed', user })
+      } else {
+        // A stored token that no longer resolves is stale — drop it.
+        if (getStoredToken()) clearStoredToken()
+        set({ status: 'anon', user: null })
+      }
     } catch {
       set({ status: 'anon', user: null })
     }
@@ -91,6 +102,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       }
       const user = sessionFrom(json)
       if (!user) return { ok: false, error: 'Sign in failed: malformed server response.' }
+      if (json.data?.token) storeToken(json.data.token)
       set({ status: 'authed', user })
       return { ok: true }
     } catch {
@@ -112,7 +124,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       }
       const user = sessionFrom(json)
       if (!user) return { ok: false, error: 'Registration failed: malformed server response.' }
-      set({ status: 'authed', user }) // register auto-signs-in
+      if (json.data?.token) storeToken(json.data.token) // register auto-signs-in
+      set({ status: 'authed', user })
       return { ok: true }
     } catch {
       return { ok: false, error: NETWORK_ERROR }
@@ -121,12 +134,20 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   logout: async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: authHeaders(),
+      })
     } catch {
       // even if the request fails, drop the local session
     }
+    clearStoredToken()
     set({ status: 'anon', user: null })
   },
 
-  forceSignOut: () => set({ status: 'anon', user: null }),
+  forceSignOut: () => {
+    clearStoredToken()
+    set({ status: 'anon', user: null })
+  },
 }))

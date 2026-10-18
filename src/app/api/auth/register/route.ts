@@ -81,7 +81,10 @@ export async function POST(req: Request) {
     })
 
     const { token, expiresAt } = await createSession(user.id)
-    const res = NextResponse.json({ data: { user: buildUserPayload(user) } }, { status: 201 })
+    const res = NextResponse.json(
+      { data: { user: buildUserPayload(user), token, expiresAt } },
+      { status: 201 },
+    )
     return setSessionCookie(res, token, expiresAt)
   } catch (err) {
     console.error('POST /api/auth/register failed', err)

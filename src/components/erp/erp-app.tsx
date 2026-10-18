@@ -13,6 +13,7 @@ import {
 import { cn } from '@/lib/utils'
 import { canView, canEdit } from '@/lib/permissions'
 import { useAuthStore, type SessionUser } from '@/lib/auth-store'
+import { authHeaders } from '@/components/erp/lib/session-token'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet'
@@ -508,7 +509,11 @@ export default function ErpRoot() {
     let alive = true
     const check = async () => {
       try {
-        const res = await fetch('/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
+        const res = await fetch('/api/auth/me', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: authHeaders(),
+        })
         if (alive && res.status === 401) {
           forceSignOut()
           window.location.hash = '#/dashboard'

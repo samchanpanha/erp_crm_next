@@ -17,6 +17,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { IMPORT_CONFIG, type ImportEntity } from '@/lib/import-config'
+import { authHeaders } from '@/components/erp/lib/session-token'
 import { useToast } from '@/hooks/use-toast'
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,27 @@ interface PreviewData {
 
 const PREVIEW_ROWS = 5
 
+/** Fetch an Excel endpoint with the auth header and save it as a file download. */
+async function downloadExcel(url: string) {
+  const res = await fetch(url, { headers: authHeaders() })
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(json.error ?? `Export failed (${res.status})`)
+  }
+  const cd = res.headers.get('content-disposition') ?? ''
+  const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(cd)
+  const filename = match ? decodeURIComponent(match[1]) : `${url.split('/').pop() ?? 'export'}.xlsx`
+  const blob = await res.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(objectUrl)
+}
+
 export function ImportExportButtons({
   entity,
   queryKeysToInvalidate,
@@ -63,6 +85,7 @@ export function ImportExportButtons({
   const [dryRun, setDryRun] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [ranDryRun, setRanDryRun] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const missingRequired = preview?.missingRequired ?? []
   const canImport =
@@ -91,7 +114,11 @@ export function ImportExportButtons({
     mutationFn: async (f: File) => {
       const form = new FormData()
       form.append('file', f)
-      const res = await fetch(`/api/import/${entity}?mode=preview`, { method: 'POST', body: form })
+      const res = await fetch(`/api/import/${entity}?mode=preview`, {
+        method: 'POST',
+        body: form,
+        headers: authHeaders(),
+      })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error((json as { error?: string }).error ?? `Preview failed (${res.status})`)
       return (json as { data: PreviewData }).data
@@ -116,7 +143,11 @@ export function ImportExportButtons({
       const form = new FormData()
       form.append('file', payload.f)
       form.append('dryRun', String(payload.dryRun))
-      const res = await fetch(`/api/import/${entity}`, { method: 'POST', body: form })
+      const res = await fetch(`/api/import/${entity}`, {
+        method: 'POST',
+        body: form,
+        headers: authHeaders(),
+      })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error((json as { error?: string }).error ?? `Import failed (${res.status})`)
       return (json as { data: ImportResult }).data
@@ -144,14 +175,30 @@ export function ImportExportButtons({
   const previewing = previewMutation.isPending
   const rowCount = preview?.rowCount ?? 0
 
+  async function runExport(url: string) {
+    setExporting(true)
+    try {
+      await downloadExcel(url)
+    } catch (err) {
+      toast({ title: 'Export failed', description: err instanceof Error ? err.message : undefined, variant: 'destructive' })
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="flex items-center gap-2">
-      {/* Export — plain anchor download of the server-generated Excel file */}
-      <Button variant="outline" size="sm" asChild className="min-h-11 sm:min-h-9">
-        <a href={`/api/export/${entity}`} download aria-label={`Export ${cfg.label} to Excel`}>
-          <Download className="h-4 w-4" aria-hidden />
-          Export
-        </a>
+      {/* Export — authenticated fetch → file download (cookie-safe in iframe preview) */}
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={exporting}
+        className="min-h-11 sm:min-h-9"
+        onClick={() => void runExport(`/api/export/${entity}`)}
+        aria-label={`Export ${cfg.label} to Excel`}
+      >
+        {exporting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Download className="h-4 w-4" aria-hidden />}
+        Export
       </Button>
 
       {/* Import — opens the wizard dialog */}
@@ -192,11 +239,15 @@ export function ImportExportButtons({
             <section className="space-y-1.5" aria-label="Step 1: download template">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-medium">1. Get the Excel template</p>
-                <Button variant="outline" size="sm" asChild className="min-h-9">
-                  <a href={`/api/export/${entity}?template=1`} download>
-                    <FileDown className="h-4 w-4" aria-hidden />
-                    Download template (.xlsx)
-                  </a>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={exporting}
+                  className="min-h-9"
+                  onClick={() => void runExport(`/api/export/${entity}?template=1`)}
+                >
+                  <FileDown className="h-4 w-4" aria-hidden />
+                  Download template (.xlsx)
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">

@@ -585,3 +585,32 @@ Stage Summary:
   * Frontend: auth-gated shell (ErpRoot), permission-filtered nav/search/quick-create/account menu, per-user QueryClient, 60s session watchdog
 - Demo credentials: admin@dolinext.com / demo123 (Administrator) · sarah@dolinext.com (Sales) · dan@dolinext.com (Accountant) · pat@demo.local / testpass123 (Viewer)
 - Dev-server ops note: background processes must re-parent to PID 1 before the tool call ends (bun -e spawn detached+unref pattern); plain nohup& dies with the session
+
+---
+Task ID: 22
+Agent: Main orchestrator (Z.ai Code)
+Task: Fix "I cannot access login" — session cookie blocked in cross-site iframe preview
+
+Work Log:
+- Diagnosis: dev.log showed POST /api/auth/login 200 (Session INSERT) immediately followed by GET /api/auth/me 401. Root cause: the preview panel embeds the app in a cross-site iframe where browsers block SameSite=Lax cookies entirely — login succeeded server-side but the httpOnly session cookie was never stored/sent, so the client stayed stuck on the auth screen.
+- Fix: dual-mode session auth (Bearer token primary, cookie fallback)
+  * NEW src/components/erp/lib/session-token.ts — localStorage-backed token store (key dolinext_session_token) with in-memory fallback for blocked storage; authHeaders() helper returns { Authorization: Bearer <token> } or {}
+  * src/lib/auth.ts — new getSessionToken() reads Authorization: Bearer header first (via next/headers), falls back to cookie; getSessionUser() uses it (all 60+ guarded routes inherit Bearer support automatically)
+  * api/auth/login + api/auth/register — response body now includes { user, token, expiresAt }
+  * api/auth/logout — deletes session rows for Bearer token AND/OR cookie
+  * src/lib/auth-store.ts — login/register store token; init/logout send authHeaders(); stale token cleared on 401; logout/forceSignOut clear token
+  * src/components/erp/lib/api.ts — fetchApi attaches Authorization header to every ERP API call
+  * erp-app.tsx session watchdog — authHeaders() on /api/auth/me check
+  * modules/reports.tsx — exportXlsx fetch sends authHeaders()
+  * shared/import-export.tsx — import preview/import FormData fetches send authHeaders(); converted both <a href download> links (Export + template) to authenticated fetch→blob downloads (downloadExcel helper, Content-Disposition filename parsing, exporting spinner state, destructive toast on failure) — anchor downloads relied on cookies and would 401 in the iframe
+- Verification:
+  * eslint (8 touched files) + tsc --noEmit → clean
+  * curl: login returns token; /api/auth/me + /api/third-parties with Bearer only → 200 (8 rows); anon → 401; cookie jar still → 200; Bearer logout → subsequent me 401; register returns working token (201→me 200)
+  * Browser (top-level, fresh session): login → ERP shell; token in localStorage; reload → session persists; sign out clears token (null); sign in as sarah → OK; zero console errors
+  * DEFINITIVE iframe reproduction: served wrapper page from http://localhost:8765 embedding http://127.0.0.1:3000 in a cross-site iframe (different site for SameSite purposes = preview-panel equivalent): login inside the iframe → full ERP shell; Third Parties data table renders; reload inside iframe → session persists; zero console errors
+- Cleanup: test tenant "Auth Fix Test Org" removed (DB now: t_demo only, users admin/sarah/dan/pat); iframe host server killed; test artifacts removed; browser sessions closed
+
+Stage Summary:
+- Login/registration now work everywhere including the cross-site iframe preview: session token rides in Authorization header + localStorage; httpOnly cookie kept as same-site-tab fallback; all guarded APIs accept both transports
+- Export/template downloads converted to authenticated fetch-blob (iframe-safe); imports and watchdog carry the header too
+- Demo credentials unchanged: admin@dolinext.com / demo123 (also sarah Sales, dan Accountant, pat@demo.local Viewer / testpass123)
