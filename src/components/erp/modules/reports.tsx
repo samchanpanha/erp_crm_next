@@ -37,7 +37,6 @@ import { EmptyState, PageHeader } from '../shared/page-header'
 import { DocStatusBadge } from '../shared/status-badge'
 import { StatCard } from '../shared/stat-card'
 import { formatDate, formatMoney, toDateInput } from '../shared/format'
-import { downloadTextFile, stringifyCsv } from '@/lib/csv'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -148,11 +147,30 @@ function printNow() {
   )
 }
 
-/** Build report-<tab>-YYYYMMDD.csv from the currently loaded report rows. */
-function exportCsv(tab: string, headers: string[], rows: Record<string, unknown>[]) {
+/** Download report-<tab>-YYYYMMDD.xlsx generated server-side (styled workbook). */
+async function exportXlsx(tab: string, headers: string[], rows: Record<string, unknown>[]) {
   const d = new Date()
   const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
-  downloadTextFile(`report-${tab}-${stamp}.csv`, stringifyCsv(headers, rows))
+  const res = await fetch('/api/export/xlsx', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filename: `report-${tab}-${stamp}.xlsx`,
+      sheetName: tab.charAt(0).toUpperCase() + tab.slice(1),
+      headers,
+      rows,
+    }),
+  })
+  if (!res.ok) throw new Error('Export failed')
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `report-${tab}-${stamp}.xlsx`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }
 
 /** '2026-10' → 'Oct 26' for chart axes. */
@@ -188,7 +206,7 @@ function ReportToolbar({ onExport }: { onExport: () => void }) {
   return (
     <div className="no-print flex flex-wrap items-center justify-end gap-2">
       <Button variant="outline" size="sm" onClick={onExport}>
-        <Download className="h-4 w-4" aria-hidden="true" /> Export CSV
+        <Download className="h-4 w-4" aria-hidden="true" /> Export Excel
       </Button>
       <Button variant="outline" size="sm" onClick={printNow}>
         <Printer className="h-4 w-4" aria-hidden="true" /> Print
@@ -258,7 +276,7 @@ function SalesTab({ from, to }: { from: string; to: string }) {
 
   const handleExport = () => {
     if (!data) return
-    exportCsv(
+    exportXlsx(
       'sales',
       ['Month', 'Revenue', 'Collected'],
       [
@@ -401,7 +419,7 @@ function AgingTab({ kind }: { kind: 'receivables' | 'payables' }) {
   const handleExport = () => {
     if (!data) return
     const partyHeader = isAr ? 'Customer' : 'Supplier'
-    exportCsv(
+    exportXlsx(
       kind,
       [
         'Ref', partyHeader, 'Code', 'Invoice date', 'Due date', 'Status',
@@ -606,7 +624,7 @@ function TopTab({ from, to }: { from: string; to: string }) {
   const handleExport = () => {
     if (!data) return
     if (data.type === 'customers') {
-      exportCsv(
+      exportXlsx(
         'top-customers',
         ['Rank', 'Customer', 'Code', 'Invoices', 'Revenue', 'Paid', 'Share %'],
         (data.rows as TopCustomerRow[]).map((r, i) => ({
@@ -620,7 +638,7 @@ function TopTab({ from, to }: { from: string; to: string }) {
         }))
       )
     } else {
-      exportCsv(
+      exportXlsx(
         'top-products',
         ['Rank', 'Product', 'Ref', 'Qty', 'Amount', 'Share %'],
         (data.rows as TopProductRow[]).map((r, i) => ({
@@ -794,7 +812,7 @@ function TaxTab({ from, to }: { from: string; to: string }) {
 
   const handleExport = () => {
     if (!data) return
-    exportCsv(
+    exportXlsx(
       'tax',
       ['Rate %', 'Net', 'VAT'],
       [
@@ -890,7 +908,7 @@ function InventoryTab() {
 
   const handleExport = () => {
     if (!data) return
-    exportCsv(
+    exportXlsx(
       'inventory',
       ['Ref', 'Product', 'Stock', 'Min stock', 'Unit cost', 'Stock value', 'Low'],
       data.rows.map((r) => ({

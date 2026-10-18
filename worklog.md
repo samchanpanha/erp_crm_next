@@ -420,3 +420,25 @@ Stage Summary:
 - V2 RELEASED: 22 modules (20 + Reports + Settings), 33 API endpoints, print/PDF engine with configurable templates + parameter fields ({{token}} system), CSV import/export with templates & dry-run validation, 6 report types with CSV export & print
 - Template system: DocTemplate per type w/ isDefault; print engine falls back isDefault → first → DEFAULT_TEMPLATE_CONFIG; designer edits persist and are consumed live by print dialogs
 - Seeded configs have fields:{} (pre-fix artifact) — harmless: UI/print engine merge with DEFAULT_TEMPLATE_CONFIG
+
+---
+Task ID: 20
+Agent: Main orchestrator (Z.ai Code)
+Task: CSV → Excel (.xlsx) migration for import/export and report exports
+
+Work Log:
+- Installed exceljs@4.4.0; added serverExternalPackages: ['exceljs'] in next.config.ts (API-route-only dep)
+- Created src/lib/import-config.ts (isomorphic): IMPORT_CONFIG per entity (label, sheetName, keyColumn, headers, required, templateRows) — single source of truth now shared by client wizard AND server template/export generator (removes drift risk; client CONFIG deleted from import-export.tsx)
+- Created src/lib/excel.ts (server): buildWorkbookBuffer (styled: orange header row white-bold text, frozen header pane, auto-filter, content-sized columns, optional merged title banner), buildTemplateBuffer (title hint row + headers + 2 samples), xlsxResponse, parseSpreadsheetFile (.xlsx/.xls/.csv detection via extension/mime/PK zip-magic; cellToString normalizes numbers/booleans(yes-no)/dates/formula results/richText/hyperlinks; merged-banner + single-cell title row detection; blank-row drop; blank headers → __colN placeholders)
+- Rewrote /api/export/[entity]: GET → styled .xlsx data export (title banner w/ record count) and ?template=1 → styled .xlsx import template; filenames *.xlsx; still uses import headers verbatim so exports round-trip
+- New POST /api/export/xlsx: ad-hoc styled workbook for reports ({filename,sheetName,headers,rows}, zod, 10k row cap, safe() coercion) — keeps exceljs out of the client bundle
+- /api/import/[entity]: added multipart/form-data transport (file + dryRun fields) alongside legacy JSON {rows,dryRun}; ?mode=preview returns {headers,rowCount,rows(5),missingRequired,kind} writing nothing; required-column + row-count guards; per-row validation pipeline unchanged (runImport extracted)
+- import-export.tsx: Excel wording (.xlsx template download link, accept=.xlsx,.xls,.csv), file→server preview via useEffect+useMutation (fix: initial version never wired mutate to file selection — caught in E2E), import posts FormData, preview table/UX preserved
+- reports.tsx: exportCsv→exportXlsx — POSTs loaded report rows to /api/export/xlsx and downloads report-<tab>-YYYYMMDD.xlsx; button label 'Export Excel' (6 call sites, signature unchanged)
+- Fixed TS error in cellToString cast (as unknown as Record); removed unused eslint-disable directive
+- E2E verified: export → valid PK/zip xlsx (8.2KB); template parse → 15 headers + 2 rows (after fixing merged-title detection); round-trip re-import of exported file → dryRun shows 8 updates 0 errors; real xlsx import → 1 imported (auto code CU2610-0012) + 1 row error (invalid email) → test record deleted, DB restored; adhoc xlsx for reports OK; bad filename → 400; cross-entity template → missingRequired guard; browser UI: upload → preview table → dry-run 'Validation finished — 2 rows would be created, no errors'; reports shows Export Excel + Print; zero console/page errors; dev.log 0×500
+- CSV compatibility kept: .csv files still accepted by import (parseCsv fallback); exports are xlsx-only
+
+Stage Summary:
+- V2.1: all tabular I/O is now Excel-first. /api/export/[entity](?template=1) + /api/export/xlsx produce styled .xlsx; /api/import/[entity] ingests .xlsx/.xls/.csv via multipart (?mode=preview for the wizard) or legacy JSON rows
+- New shared modules: src/lib/excel.ts (server), src/lib/import-config.ts (isomorphic); exceljs externalized from the client bundle

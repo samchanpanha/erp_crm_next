@@ -2,13 +2,20 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { nextRef, REF_PREFIX } from '@/lib/refs'
+import { IMPORT_CONFIG, isImportEntity } from '@/lib/import-config'
+import { parseSpreadsheetFile } from '@/lib/excel'
 
 export const dynamic = 'force-dynamic'
 
 /**
  * POST /api/import/[entity]
  * Server-validated bulk import for 'third-parties' | 'products'.
- * Body: { rows: Record<string,string>[], dryRun?: boolean }
+ * Two transports:
+ *  1) JSON body: { rows: Record<string,string>[], dryRun?: boolean }
+ *  2) multipart/form-data: file=<.xlsx|.xls|.csv upload>, dryRun='true'|'false'
+ *     - ?mode=preview  → { headers, rowCount, rows(first 5), missingRequired, kind }
+ *                        (parses + checks headers only, writes nothing)
+ *     - otherwise      → full import: { imported, updated, skipped, errors }
  * Rows are mapped + validated one-by-one (errors are collected per row,
  * processing continues). `code` / `ref` behave as an upsert key: a value
  * updates the existing record, an empty value auto-generates one via the
@@ -20,6 +27,8 @@ type Entity = (typeof ENTITIES)[number]
 
 const MAX_ROWS = 5000
 const MAX_ERRORS = 50
+const MAX_FILE_BYTES = 2 * 1024 * 1024 // 2 MB upload guard
+const PREVIEW_ROW_COUNT = 5
 
 const importSchema = z.object({
   rows: z.array(z.record(z.string(), z.string())).max(MAX_ROWS, `Rows are limited to ${MAX_ROWS} per import`),
@@ -343,15 +352,128 @@ async function createProduct(data: ProductData & { ref: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/import/[entity]  → { data: { imported, updated, skipped, errors } }
+// POST /api/import/[entity]
 // ---------------------------------------------------------------------------
+interface ImportResult {
+  imported: number
+  updated: number
+  skipped: number
+  errors: { row: number; message: string }[]
+}
+
+async function runImport(entity: Entity, rows: Record<string, string>[], dryRun: boolean): Promise<ImportResult> {
+  const processRow = entity === 'third-parties' ? processThirdPartyRow : processProductRow
+  let imported = 0
+  let updated = 0
+  const allErrors: { row: number; message: string }[] = []
+
+  for (let i = 0; i < rows.length; i++) {
+    const rowNum = i + 1 // 1-based data row (matches the wizard preview)
+    try {
+      const outcome = await processRow(rows[i], dryRun)
+      if (outcome === 'created') imported++
+      else updated++
+    } catch (e) {
+      allErrors.push({
+        row: rowNum,
+        message: e instanceof ImportError ? e.message : 'Unexpected error while importing this row',
+      })
+    }
+  }
+
+  const truncated = allErrors.length > MAX_ERRORS
+  const errors = truncated
+    ? [...allErrors.slice(0, MAX_ERRORS), { row: 0, message: `…and ${allErrors.length - MAX_ERRORS} more` }]
+    : allErrors
+
+  return { imported, updated, skipped: allErrors.length, errors }
+}
+
+function missingRequiredColumns(entity: Entity, headers: string[]): string[] {
+  return IMPORT_CONFIG[entity].required.filter((h) => !headers.includes(h))
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ entity: string }> }) {
   try {
     const { entity } = await params
-    if (!ENTITIES.includes(entity as Entity)) {
+    if (!isImportEntity(entity)) {
       return NextResponse.json({ error: `Unknown import entity "${entity}"` }, { status: 404 })
     }
 
+    const contentType = req.headers.get('content-type') ?? ''
+
+    // ---- Transport A: multipart file upload (Excel / CSV) -----------------
+    if (contentType.includes('multipart/form-data')) {
+      const form = await req.formData().catch(() => null)
+      const file = form?.get('file')
+      if (!form || !(file instanceof File)) {
+        return NextResponse.json({ error: 'Missing file — attach a spreadsheet in the "file" field' }, { status: 400 })
+      }
+      if (file.size === 0) {
+        return NextResponse.json({ error: 'The uploaded file is empty' }, { status: 400 })
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        return NextResponse.json(
+          { error: `File is too large (${Math.round(file.size / 1024)} KB — the limit is ${MAX_FILE_BYTES / 1024} KB)` },
+          { status: 400 },
+        )
+      }
+      const dryRun = String(form.get('dryRun') ?? 'false') === 'true'
+      const isPreview = new URL(req.url).searchParams.get('mode') === 'preview'
+
+      let parsed
+      try {
+        parsed = await parseSpreadsheetFile({
+          name: file.name,
+          type: file.type,
+          buffer: Buffer.from(await file.arrayBuffer()),
+        })
+      } catch (e) {
+        return NextResponse.json(
+          { error: e instanceof Error ? e.message : 'Could not read the spreadsheet' },
+          { status: 400 },
+        )
+      }
+
+      if (parsed.headers.length === 0) {
+        return NextResponse.json({ error: 'Could not detect a header row in the file' }, { status: 400 })
+      }
+
+      const missing = missingRequiredColumns(entity, parsed.headers)
+
+      if (isPreview) {
+        return NextResponse.json({
+          data: {
+            headers: parsed.headers,
+            rowCount: parsed.rows.length,
+            rows: parsed.rows.slice(0, PREVIEW_ROW_COUNT),
+            missingRequired: missing,
+            kind: parsed.kind,
+          },
+        })
+      }
+
+      if (missing.length > 0) {
+        return NextResponse.json(
+          { error: `Missing required column: ${missing.join(', ')} — compare with the template` },
+          { status: 400 },
+        )
+      }
+      if (parsed.rows.length === 0) {
+        return NextResponse.json({ error: 'No data rows found — the file only contains a header' }, { status: 400 })
+      }
+      if (parsed.rows.length > MAX_ROWS) {
+        return NextResponse.json(
+          { error: `The file has ${parsed.rows.length} rows — the limit is ${MAX_ROWS} per import` },
+          { status: 400 },
+        )
+      }
+
+      const result = await runImport(entity, parsed.rows, dryRun)
+      return NextResponse.json({ data: result })
+    }
+
+    // ---- Transport B: JSON rows (kept for API compatibility) --------------
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
@@ -366,34 +488,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ entity:
     }
 
     const { rows, dryRun } = parsed.data
-    const processRow = entity === 'third-parties' ? processThirdPartyRow : processProductRow
-
-    let imported = 0
-    let updated = 0
-    const allErrors: { row: number; message: string }[] = []
-
-    for (let i = 0; i < rows.length; i++) {
-      const rowNum = i + 1 // 1-based data row (matches the wizard preview)
-      try {
-        const outcome = await processRow(rows[i], dryRun)
-        if (outcome === 'created') imported++
-        else updated++
-      } catch (e) {
-        allErrors.push({
-          row: rowNum,
-          message: e instanceof ImportError ? e.message : 'Unexpected error while importing this row',
-        })
-      }
-    }
-
-    const truncated = allErrors.length > MAX_ERRORS
-    const errors = truncated
-      ? [...allErrors.slice(0, MAX_ERRORS), { row: 0, message: `…and ${allErrors.length - MAX_ERRORS} more` }]
-      : allErrors
-
-    return NextResponse.json({
-      data: { imported, updated, skipped: allErrors.length, errors },
-    })
+    const result = await runImport(entity as Entity, rows, dryRun)
+    return NextResponse.json({ data: result })
   } catch (err) {
     console.error('POST /api/import failed', err)
     return NextResponse.json({ error: 'Import failed' }, { status: 500 })

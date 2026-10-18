@@ -1,27 +1,17 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { stringifyCsv } from '@/lib/csv'
+import { IMPORT_CONFIG, isImportEntity } from '@/lib/import-config'
+import { buildWorkbookBuffer, buildTemplateBuffer, xlsxResponse } from '@/lib/excel'
 
 export const dynamic = 'force-dynamic'
 
 /**
- * GET /api/export/[entity]
- * Server-generated CSV export ('third-parties' | 'products').
- * Uses EXACTLY the same headers as the import templates so an exported file
- * can be re-imported without changes. Capped at 10 000 rows.
- * A UTF-8 BOM is prepended so Excel opens the file with correct encoding
- * (our parseCsv strips it on re-import).
+ * GET /api/export/[entity]            → Excel .xlsx export of all records
+ * GET /api/export/[entity]?template=1 → styled .xlsx import template (headers + samples)
+ * Entities: 'third-parties' | 'products'.
+ * Uses EXACTLY the same headers as the import pipeline so an exported file can
+ * be re-imported without changes. Capped at 10 000 rows.
  */
-
-const TP_HEADERS = [
-  'code', 'name', 'type', 'status', 'email', 'phone', 'website', 'address',
-  'zip', 'city', 'country', 'vatNumber', 'currency', 'paymentTerms', 'notes',
-]
-
-const PRODUCT_HEADERS = [
-  'ref', 'label', 'type', 'description', 'unit', 'sellPrice', 'costPrice',
-  'vatRate', 'barcode', 'manageStock', 'stockQty', 'minStock', 'status',
-]
 
 const MAX_EXPORT_ROWS = 10000
 
@@ -30,16 +20,27 @@ function dateStamp(): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 }
 
-export async function GET(_req: Request, { params }: { params: Promise<{ entity: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ entity: string }> }) {
   try {
     const { entity } = await params
+    if (!isImportEntity(entity)) {
+      return NextResponse.json({ error: `Unknown export entity "${entity}"` }, { status: 404 })
+    }
+    const cfg = IMPORT_CONFIG[entity]
+    const isTemplate = new URL(req.url).searchParams.get('template') === '1'
 
+    if (isTemplate) {
+      const buffer = await buildTemplateBuffer(cfg.sheetName, cfg.headers, cfg.templateRows)
+      return xlsxResponse(`template-${entity}.xlsx`, buffer)
+    }
+
+    let rows: Record<string, unknown>[]
     if (entity === 'third-parties') {
-      const rows = await db.thirdParty.findMany({
+      const all = await db.thirdParty.findMany({
         orderBy: { createdAt: 'desc' },
         take: MAX_EXPORT_ROWS,
       })
-      const csvRows = rows.map((t) => ({
+      rows = all.map((t) => ({
         code: t.code,
         name: t.name,
         type: t.type,
@@ -56,21 +57,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ entity:
         paymentTerms: t.paymentTerms,
         notes: t.notes,
       }))
-      const csv = '\uFEFF' + stringifyCsv(TP_HEADERS, csvRows)
-      return new NextResponse(csv, {
-        headers: {
-          'Content-Type': 'text/csv; charset=utf-8',
-          'Content-Disposition': `attachment; filename="third-parties-${dateStamp()}.csv"`,
-        },
-      })
-    }
-
-    if (entity === 'products') {
-      const rows = await db.product.findMany({
+    } else {
+      const all = await db.product.findMany({
         orderBy: { createdAt: 'desc' },
         take: MAX_EXPORT_ROWS,
       })
-      const csvRows = rows.map((p) => ({
+      rows = all.map((p) => ({
         ref: p.ref,
         label: p.label,
         type: p.type,
@@ -85,16 +77,15 @@ export async function GET(_req: Request, { params }: { params: Promise<{ entity:
         minStock: p.minStock,
         status: p.status,
       }))
-      const csv = '\uFEFF' + stringifyCsv(PRODUCT_HEADERS, csvRows)
-      return new NextResponse(csv, {
-        headers: {
-          'Content-Type': 'text/csv; charset=utf-8',
-          'Content-Disposition': `attachment; filename="products-${dateStamp()}.csv"`,
-        },
-      })
     }
 
-    return NextResponse.json({ error: `Unknown export entity "${entity}"` }, { status: 404 })
+    const buffer = await buildWorkbookBuffer({
+      sheetName: cfg.sheetName,
+      headers: cfg.headers,
+      rows,
+      title: `${cfg.label.toUpperCase()} — exported from DoliNext on ${new Date().toISOString().slice(0, 10)} (${rows.length} records)`,
+    })
+    return xlsxResponse(`${entity}-${dateStamp()}.xlsx`, buffer)
   } catch (err) {
     console.error('GET /api/export failed', err)
     return NextResponse.json({ error: 'Export failed' }, { status: 500 })

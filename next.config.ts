@@ -2,7 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  /* config options here */
+  /* Keep heavy native-ish CJS deps out of the bundler (used by API routes only) */
+  serverExternalPackages: ["exceljs"],
   typescript: {
     ignoreBuildErrors: true,
   },

@@ -1,9 +1,9 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertTriangle, CheckCircle2, Download, FileDown, FileUp, Loader2, Upload,
+  AlertTriangle, CheckCircle2, Download, FileDown, FileSpreadsheet, FileUp, Loader2, Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,18 +16,16 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { parseCsv, stringifyCsv, downloadTextFile, type ParsedCsv } from '@/lib/csv'
-import { post } from '@/components/erp/lib/api'
+import { IMPORT_CONFIG, type ImportEntity } from '@/lib/import-config'
 import { useToast } from '@/hooks/use-toast'
 
 // ---------------------------------------------------------------------------
-// ImportExportButtons — shared CSV export/import toolbar group.
-// Export streams /api/export/[entity]; Import opens a wizard dialog that
-// parses the file client-side, previews it, then posts rows to
-// /api/import/[entity] (server re-validates everything, dry run supported).
+// ImportExportButtons — shared Excel export/import toolbar group.
+// Export streams /api/export/[entity] (.xlsx). Import opens a wizard dialog:
+// picking a file triggers a server-side preview (?mode=preview — parse +
+// header check only), then the import posts the file to /api/import/[entity]
+// (server re-validates every row, dry run supported).
 // ---------------------------------------------------------------------------
-
-type Entity = 'third-parties' | 'products'
 
 interface ImportResult {
   imported: number
@@ -36,133 +34,43 @@ interface ImportResult {
   errors: { row: number; message: string }[]
 }
 
-const MAX_FILE_BYTES = 400 * 1024 // 400 KB client-side guard
-const PREVIEW_ROWS = 5
-
-const CONFIG: Record<Entity, {
-  label: string
-  keyColumn: string
+interface PreviewData {
   headers: string[]
-  required: string[]
-  templateRows: Record<string, string>[]
-}> = {
-  'third-parties': {
-    label: 'third parties',
-    keyColumn: 'code',
-    headers: [
-      'code', 'name', 'type', 'status', 'email', 'phone', 'website', 'address',
-      'zip', 'city', 'country', 'vatNumber', 'currency', 'paymentTerms', 'notes',
-    ],
-    required: ['name'],
-    templateRows: [
-      {
-        code: '',
-        name: 'Globex Corporation',
-        type: 'CUSTOMER',
-        status: 'ACTIVE',
-        email: 'contact@globex.com',
-        phone: '+1 555 234 1180',
-        website: 'https://globex.com',
-        address: '123 Market Street',
-        zip: '94105',
-        city: 'San Francisco',
-        country: 'USA',
-        vatNumber: 'US-987654321',
-        currency: 'USD',
-        paymentTerms: 'NET30',
-        notes: 'Key enterprise account',
-      },
-      {
-        code: '',
-        name: 'Acme Supplies Ltd.',
-        type: 'SUPPLIER',
-        status: 'ACTIVE',
-        email: 'sales@acmesupplies.co.uk',
-        phone: '+44 20 7946 0958',
-        website: 'https://acmesupplies.co.uk',
-        address: '45 Harbour Lane',
-        zip: 'EH6 6QQ',
-        city: 'Edinburgh',
-        country: 'UK',
-        vatNumber: 'GB-123456789',
-        currency: 'EUR',
-        paymentTerms: 'NET15',
-        notes: 'Leave code empty to auto-generate',
-      },
-    ],
-  },
-  products: {
-    label: 'products & services',
-    keyColumn: 'ref',
-    headers: [
-      'ref', 'label', 'type', 'description', 'unit', 'sellPrice', 'costPrice',
-      'vatRate', 'barcode', 'manageStock', 'stockQty', 'minStock', 'status',
-    ],
-    required: ['label'],
-    templateRows: [
-      {
-        ref: '',
-        label: 'Ergonomic Office Chair',
-        type: 'PRODUCT',
-        description: 'Mesh back, adjustable lumbar support',
-        unit: 'unit',
-        sellPrice: '249.00',
-        costPrice: '140.50',
-        vatRate: '20',
-        barcode: '9780201379624',
-        manageStock: 'yes',
-        stockQty: '25',
-        minStock: '5',
-        status: 'ACTIVE',
-      },
-      {
-        ref: '',
-        label: 'Onsite Installation Service',
-        type: 'SERVICE',
-        description: 'On-site setup by a certified technician (per hour)',
-        unit: 'hour',
-        sellPrice: '80',
-        costPrice: '45',
-        vatRate: '20',
-        barcode: '',
-        manageStock: 'no',
-        stockQty: '0',
-        minStock: '0',
-        status: 'ACTIVE',
-      },
-    ],
-  },
+  rowCount: number
+  rows: Record<string, string>[]
+  missingRequired: string[]
+  kind: 'xlsx' | 'csv'
 }
+
+const PREVIEW_ROWS = 5
 
 export function ImportExportButtons({
   entity,
   queryKeysToInvalidate,
 }: {
-  entity: Entity
+  entity: ImportEntity
   queryKeysToInvalidate: string[][]
 }) {
-  const cfg = CONFIG[entity]
+  const cfg = IMPORT_CONFIG[entity]
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [open, setOpen] = useState(false)
-  const [fileName, setFileName] = useState('')
-  const [parsed, setParsed] = useState<ParsedCsv | null>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [preview, setPreview] = useState<PreviewData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dryRun, setDryRun] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [ranDryRun, setRanDryRun] = useState(false)
 
-  const missingRequired = parsed
-    ? cfg.required.filter((h) => !parsed.headers.includes(h))
-    : []
+  const missingRequired = preview?.missingRequired ?? []
   const canImport =
-    !!parsed && parsed.rows.length > 0 && missingRequired.length === 0 && !error
+    !!preview && preview.rowCount > 0 && missingRequired.length === 0 && !error
 
   function reset() {
-    setFileName('')
-    setParsed(null)
+    setFile(null)
+    setPreview(null)
     setError(null)
     setDryRun(false)
     setResult(null)
@@ -170,52 +78,54 @@ export function ImportExportButtons({
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  function downloadTemplate() {
-    downloadTextFile(`template-${entity}.csv`, stringifyCsv(cfg.headers, cfg.templateRows))
-  }
-
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    setParsed(null)
+    const picked = e.target.files?.[0] ?? null
+    setPreview(null)
     setError(null)
     setResult(null)
-    if (!file) {
-      setFileName('')
-      return
-    }
-    setFileName(file.name)
-    if (file.size > MAX_FILE_BYTES) {
-      setError(
-        `"${file.name}" is ${Math.round(file.size / 1024)} KB — the limit is 400 KB. Split the file or remove unneeded rows/columns.`,
-      )
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      const text = typeof reader.result === 'string' ? reader.result : ''
-      if (!text.trim()) {
-        setError('The file appears to be empty.')
-        return
-      }
-      const p = parseCsv(text)
-      if (!p.headers.length) {
-        setError('Could not detect a CSV header row.')
-        return
-      }
-      setParsed(p)
-    }
-    reader.onerror = () => setError('Failed to read the file.')
-    reader.readAsText(file)
+    setFile(picked)
   }
 
-  const importMutation = useMutation({
-    mutationFn: (payload: { rows: Record<string, string>[]; dryRun: boolean }) =>
-      post<ImportResult>(`/api/import/${entity}`, payload),
+  // Parse + validate the chosen file on the server as soon as it is selected.
+  const previewMutation = useMutation({
+    mutationFn: async (f: File) => {
+      const form = new FormData()
+      form.append('file', f)
+      const res = await fetch(`/api/import/${entity}?mode=preview`, { method: 'POST', body: form })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((json as { error?: string }).error ?? `Preview failed (${res.status})`)
+      return (json as { data: PreviewData }).data
+    },
     onSuccess: (data) => {
-      setResult(data)
-      setRanDryRun(dryRun)
+      setPreview(data)
       setError(null)
-      if (!dryRun) {
+    },
+    onError: (err: Error) => {
+      setPreview(null)
+      setError(err.message)
+    },
+  })
+
+  useEffect(() => {
+    if (!file) return
+    previewMutation.mutate(file)
+  }, [file])
+
+  const importMutation = useMutation({
+    mutationFn: async (payload: { f: File; dryRun: boolean }) => {
+      const form = new FormData()
+      form.append('file', payload.f)
+      form.append('dryRun', String(payload.dryRun))
+      const res = await fetch(`/api/import/${entity}`, { method: 'POST', body: form })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((json as { error?: string }).error ?? `Import failed (${res.status})`)
+      return (json as { data: ImportResult }).data
+    },
+    onSuccess: (data, payload) => {
+      setResult(data)
+      setRanDryRun(payload.dryRun)
+      setError(null)
+      if (!payload.dryRun) {
         for (const key of queryKeysToInvalidate) {
           void queryClient.invalidateQueries({ queryKey: key })
         }
@@ -231,13 +141,14 @@ export function ImportExportButtons({
   })
 
   const pending = importMutation.isPending
-  const rowCount = parsed?.rows.length ?? 0
+  const previewing = previewMutation.isPending
+  const rowCount = preview?.rowCount ?? 0
 
   return (
     <div className="flex items-center gap-2">
-      {/* Export — plain anchor download of the server-generated CSV */}
+      {/* Export — plain anchor download of the server-generated Excel file */}
       <Button variant="outline" size="sm" asChild className="min-h-11 sm:min-h-9">
-        <a href={`/api/export/${entity}`} download aria-label="Export CSV">
+        <a href={`/api/export/${entity}`} download aria-label={`Export ${cfg.label} to Excel`}>
           <Download className="h-4 w-4" aria-hidden />
           Export
         </a>
@@ -249,7 +160,7 @@ export function ImportExportButtons({
         size="sm"
         className="min-h-11 sm:min-h-9"
         onClick={() => setOpen(true)}
-        aria-label="Import CSV"
+        aria-label={`Import ${cfg.label} from Excel`}
       >
         <Upload className="h-4 w-4" aria-hidden />
         Import
@@ -261,6 +172,7 @@ export function ImportExportButtons({
           setOpen(o)
           if (!o) {
             importMutation.reset()
+            previewMutation.reset()
             reset()
           }
         }}
@@ -269,9 +181,9 @@ export function ImportExportButtons({
           <DialogHeader>
             <DialogTitle>Import {cfg.label}</DialogTitle>
             <DialogDescription>
-              Bulk-create or update {cfg.label} from a CSV file. Rows are matched by{' '}
-              <span className="font-medium text-foreground">{cfg.keyColumn}</span> — leave it
-              empty to auto-generate one.
+              Bulk-create or update {cfg.label} from an Excel file (.xlsx) — CSV also works. Rows
+              are matched by <span className="font-medium text-foreground">{cfg.keyColumn}</span> —
+              leave it empty to auto-generate one.
             </DialogDescription>
           </DialogHeader>
 
@@ -279,10 +191,12 @@ export function ImportExportButtons({
             {/* Step 1 — template */}
             <section className="space-y-1.5" aria-label="Step 1: download template">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-medium">1. Get the template</p>
-                <Button variant="outline" size="sm" onClick={downloadTemplate} className="min-h-9">
-                  <FileDown className="h-4 w-4" aria-hidden />
-                  Download template
+                <p className="text-sm font-medium">1. Get the Excel template</p>
+                <Button variant="outline" size="sm" asChild className="min-h-9">
+                  <a href={`/api/export/${entity}?template=1`} download>
+                    <FileDown className="h-4 w-4" aria-hidden />
+                    Download template (.xlsx)
+                  </a>
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
@@ -293,19 +207,26 @@ export function ImportExportButtons({
             </section>
 
             {/* Step 2 — file */}
-            <section className="space-y-2" aria-label="Step 2: choose a CSV file">
-              <p className="text-sm font-medium">2. Choose a CSV file</p>
+            <section className="space-y-2" aria-label="Step 2: choose a spreadsheet file">
+              <p className="text-sm font-medium">2. Choose a spreadsheet</p>
               <div className="flex items-center gap-2 rounded-lg border border-dashed p-3">
                 <FileUp className="h-5 w-5 shrink-0 text-muted-foreground" aria-hidden />
                 <Input
                   ref={fileInputRef}
                   type="file"
-                  accept=".csv,text/csv"
+                  accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
                   onChange={onFileChange}
-                  aria-label="CSV file to import"
+                  aria-label="Excel or CSV file to import"
                   className="cursor-pointer text-sm"
                 />
               </div>
+
+              {file && previewing && (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                  Reading {file.name}…
+                </p>
+              )}
 
               {error && (
                 <Alert variant="destructive">
@@ -315,12 +236,13 @@ export function ImportExportButtons({
                 </Alert>
               )}
 
-              {parsed && (
+              {preview && !previewing && (
                 <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground" role="status">
-                    <span className="font-medium text-foreground">{fileName}</span> —{' '}
-                    {rowCount} row{rowCount === 1 ? '' : 's'}, {parsed.headers.length} columns
-                    detected
+                  <p className="flex items-center gap-1.5 text-sm text-muted-foreground" role="status">
+                    <FileSpreadsheet className="h-4 w-4 text-emerald-600" aria-hidden />
+                    <span className="font-medium text-foreground">{file?.name}</span> —{' '}
+                    {preview.rowCount} row{preview.rowCount === 1 ? '' : 's'},{' '}
+                    {preview.headers.length} columns · {preview.kind.toUpperCase()}
                   </p>
 
                   {missingRequired.length > 0 && (
@@ -333,19 +255,19 @@ export function ImportExportButtons({
                     </Alert>
                   )}
 
-                  {parsed.rows.length === 0 && (
+                  {preview.rowCount === 0 && (
                     <p className="text-sm text-muted-foreground">
                       No data rows found — the file only contains a header.
                     </p>
                   )}
 
-                  {parsed.rows.length > 0 && (
+                  {preview.rows.length > 0 && (
                     <div className="max-h-48 overflow-auto rounded-md border">
                       <Table>
                         <TableHeader>
                           <TableRow>
                             <TableHead className="sticky left-0 z-10 bg-background">#</TableHead>
-                            {parsed.headers.map((h) => (
+                            {preview.headers.map((h) => (
                               <TableHead key={h} className="whitespace-nowrap">
                                 {h}
                               </TableHead>
@@ -353,12 +275,12 @@ export function ImportExportButtons({
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {parsed.rows.slice(0, PREVIEW_ROWS).map((row, i) => (
+                          {preview.rows.map((row, i) => (
                             <TableRow key={i}>
                               <TableCell className="sticky left-0 z-10 bg-background font-medium text-muted-foreground">
                                 {i + 1}
                               </TableCell>
-                              {parsed.headers.map((h) => (
+                              {preview.headers.map((h) => (
                                 <TableCell
                                   key={h}
                                   className="max-w-40 truncate whitespace-nowrap text-muted-foreground"
@@ -372,11 +294,6 @@ export function ImportExportButtons({
                         </TableBody>
                       </Table>
                     </div>
-                  )}
-                  {parsed.rows.length > PREVIEW_ROWS && (
-                    <p className="text-xs text-muted-foreground">
-                      Showing first {PREVIEW_ROWS} of {rowCount} rows.
-                    </p>
                   )}
                 </div>
               )}
@@ -451,8 +368,8 @@ export function ImportExportButtons({
               Close
             </Button>
             <Button
-              disabled={!canImport || pending}
-              onClick={() => parsed && importMutation.mutate({ rows: parsed.rows, dryRun })}
+              disabled={!canImport || pending || previewing}
+              onClick={() => file && importMutation.mutate({ f: file, dryRun })}
             >
               {pending ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
