@@ -770,3 +770,30 @@ Stage Summary:
 - Buy Me a Coffee module (Tasks 25-27) fully removed: UI, nav, permissions catalog, API routes, static-image lib, DB tables, seeded role permission strings, public assets and dev scripts — codebase rg-verified coffee/khqr-free
 - Sidebar is back to 9 groups (Home, CRM & Sales, Billing & Finance, Purchasing, Products & Stock, Projects, HR, Support, Configuration); Quick create and all other modules unaffected
 - Demo credentials unchanged: admin@dolinext.com / demo123 · pat@demo.local / testpass123 (Viewer)
+
+---
+Task ID: 29
+Agent: Main orchestrator (Z.ai Code)
+Task: "help me add button name buy me a coffee dialog near button quick create when load information about image KHQR code (Buy me a coffee / ERP & CRM is free and open source. If it helped you, a coffee keeps the next free tool brewing.)"
+
+Work Log:
+- Re-introduced the coffee feature in LEAN form — button + dialog ONLY (no module page, no nav group, no permissions entry, no DB tables, no support log; those stayed removed per Task 28)
+- NEW src/lib/static-khqr.ts (server fs): findStaticKhqr / staticKhqrUrl (?v=<mtime> cache-buster) / writeStaticKhqr (exactly one file, wipes other variants) / clearStaticKhqr; png|jpg|jpeg|webp whitelist + 2 MB cap; storage = public/coffee/khqr.<ext> (STATIC, survives DB changes)
+- NEW /api/coffee/static-image: GET (any signed-in user) → { khqrUrl | null }; POST FormData(file) + DELETE — both super-administrator only ("*" wildcard via isSuperAdmin, re-added to permissions.ts with owner-only rationale); 400 on GIF/empty/oversized, 403 writes for non-super-admin, 401 anon
+- NEW src/components/erp/shared/coffee-button.tsx — CoffeeQuickButton: amber outline button (Coffee icon + label, icon-only on mobile, aria-label always) in the TopBar immediately left of Quick create; Dialog shows EXACTLY the requested copy — title "Buy me a coffee", description "ERP & CRM is free and open source. If it helped you, a coffee keeps the next free tool brewing." — then loads the KHQR image via useQuery(['coffee-khqr']) on open
+- Dialog states: loading spinner → error alert → with-image (white QR panel, Download QR via fetch→blob anchor iframe-safe, "HOW TO SEND A COFFEE" 3 scan steps: banking app Bakong/ACLEDA/ABA/Wing → scan → confirm; super-admin row: Replace image / Remove / "Super admin" ShieldCheck badge) → empty state ("No KHQR image yet"; super admin gets Upload KHQR image, others get "The payment code will appear here once the super administrator adds it.")
+- Upload path: hidden file input (accept png/jpeg/webp) → FormData POST via plain fetch + authHeaders (browser sets multipart boundary) → query cache update → toast; remove via fetchApi DELETE
+- erp-app.tsx: imported CoffeeQuickButton, rendered as first child of the TopBar ml-auto cluster (before Quick create)
+- Verification:
+  * eslint clean; tsc clean (project code)
+  * API matrix (curl): anon GET 401 · admin GET 200 {khqrUrl:null} · admin POST PNG 200 + static URL served 200 · viewer POST/DELETE 403 · GIF 400 · admin DELETE 200 → khqrUrl null → file 404
+  * Browser E2E admin: top bar "Buy me a coffee" beside "+ Quick create"; dialog copy exact; empty state + Upload; real file upload → <img src="/coffee/khqr.png?v=…"> naturalWidth 120; Replace → new ?v=; Remove → empty state returns; screenshot confirmed layout
+  * Browser E2E viewer (pat@demo.local): button visible, dialog = title + tagline + empty state "will appear once the super administrator adds it", buttons = [Close] ONLY — zero upload/replace/remove
+  * Mobile 390px: icon-only button (38×36) beside icon Quick create, scrollWidth = viewport, no overflow
+  * Zero console/page errors; dev.log free of 5xx
+- Final state: public/coffee/ EMPTY (only .gitkeep) — the super administrator uploads their own KHQR via the dialog; the upload persists as one static file until replaced/removed
+
+Stage Summary:
+- "Buy me a coffee" quick-access button restored beside Quick create: dialog loads the static KHQR payment image + requested tagline + scan instructions for every signed-in user; image upload/replace/remove locked to the super administrator on both client and server
+- Deliberately no ERP module/nav/DB footprint — the feature is exactly button + dialog + one static file
+- Demo credentials unchanged: admin@dolinext.com / demo123 (super admin) · pat@demo.local / testpass123 (Viewer)

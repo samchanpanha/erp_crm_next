@@ -56,6 +56,15 @@ export function canEdit(permissions: string[], moduleName: string): boolean {
   return hasPerm(permissions, perm(moduleName, 'edit'))
 }
 
+/**
+ * Super administrator = the wildcard "*" permission (the account owner).
+ * Reserved for owner-only actions such as setting the Buy-me-a-coffee KHQR
+ * payment image — the QR must always belong to the account owner.
+ */
+export function isSuperAdmin(permissions: string[]): boolean {
+  return permissions.includes('*')
+}
+
 export interface SystemRoleDef {
   name: string
   description: string

@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import AuthScreen from '@/components/erp/auth-screen'
+import { CoffeeQuickButton } from '@/components/erp/shared/coffee-button'
 
 const loadingFallback = () => (
   <div className="flex h-64 items-center justify-center gap-3 text-muted-foreground">
@@ -486,6 +487,9 @@ function TopBar({
       </div>
 
       <div className="ml-auto flex items-center gap-2">
+        {/* Buy me a coffee — KHQR quick access beside Quick create */}
+        <CoffeeQuickButton user={user} />
+
         {quickCreateItems.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
