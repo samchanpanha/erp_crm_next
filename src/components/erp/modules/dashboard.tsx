@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import { get } from '@/components/erp/lib/api'
+import { useAuthStore } from '@/lib/auth-store'
 import { StatCard } from '@/components/erp/shared/stat-card'
 import { DocStatusBadge, PriorityBadge } from '@/components/erp/shared/status-badge'
 import { formatMoney, formatDate, relativeDays } from '@/components/erp/shared/format'
@@ -56,6 +57,8 @@ export default function Dashboard() {
     queryFn: () => get<DashData>('/api/dashboard'),
   })
 
+  const authUser = useAuthStore((s) => s.user)
+
   if (error) {
     return (
       <Card>
@@ -63,6 +66,8 @@ export default function Dashboard() {
       </Card>
     )
   }
+
+  const firstName = authUser?.name?.trim().split(/\s+/)[0] ?? 'there'
 
   const k = data?.kpis
   const pieData = (data?.invoiceStatusCounts ?? []).map((s) => ({
@@ -74,7 +79,7 @@ export default function Dashboard() {
     <div className="space-y-6">
       {/* Welcome */}
       <div>
-        <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Welcome back, Alice 👋</h1>
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Welcome back, {firstName} 👋</h1>
         <p className="text-sm text-muted-foreground">
           Here is what happens across your business today.
         </p>

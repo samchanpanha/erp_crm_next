@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { computeLineTotal, computeLineVat, round2 } from '@/lib/doc-math'
 
 import { dayEnd, optionalDateParam, parseDateParam, startOfYear } from '../_shared'
@@ -20,6 +21,10 @@ const querySchema = z.object({
 
 export async function GET(request: Request) {
   try {
+    const ctx = await requirePerm('reports.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const parsed = querySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams))
     if (!parsed.success) {
       return NextResponse.json(
@@ -38,7 +43,7 @@ export async function GET(request: Request) {
     }
 
     const lines = await db.invoiceLine.findMany({
-      where: { invoice: { status: { notIn: ['DRAFT', 'CANCELLED'] }, date: { gte: windowStart, lte: windowEnd } } },
+      where: { invoice: { tenantId: user.tenantId, status: { notIn: ['DRAFT', 'CANCELLED'] }, date: { gte: windowStart, lte: windowEnd } } },
       select: { qty: true, unitPrice: true, discountPct: true, vatRate: true },
     })
 

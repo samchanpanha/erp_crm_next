@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,8 +38,15 @@ function firstIssueMessage(err: z.ZodError): string {
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('knowledge.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.knowledgeArticle.findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.knowledgeArticle.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!existing) return bad('Article not found', 404)
 
     const article = await db.knowledgeArticle.update({
@@ -58,8 +66,15 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // ---------------------------------------------------------------------------
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('knowledge.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.knowledgeArticle.findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.knowledgeArticle.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!existing) return bad('Article not found', 404)
 
     const body = await req.json().catch(() => null)
@@ -88,8 +103,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('knowledge.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.knowledgeArticle.findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.knowledgeArticle.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!existing) return bad('Article not found', 404)
 
     await db.knowledgeArticle.delete({ where: { id } })

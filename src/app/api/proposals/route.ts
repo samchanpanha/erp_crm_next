@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 import { computeTotals } from '@/lib/doc-math'
 
@@ -37,10 +38,10 @@ const createSchema = z.object({
  * refs (PR2610-0001…) without hydrating the Sequence table, so the first
  * nextRef() calls can collide — retry on the unique-constraint error (P2002).
  */
-async function createWithRef<T>(prefix: string, make: (ref: string) => Promise<T>): Promise<T> {
+async function createWithRef<T>(tenantId: string, prefix: string, make: (ref: string) => Promise<T>): Promise<T> {
   let lastErr: unknown
   for (let attempt = 0; attempt < 12; attempt++) {
-    const ref = await nextRef(prefix)
+    const ref = await nextRef(tenantId, prefix)
     try {
       return await make(ref)
     } catch (e) {
@@ -57,6 +58,10 @@ async function createWithRef<T>(prefix: string, make: (ref: string) => Promise<T
 // ---------------------------------------------------------------------------
 export async function GET(request: Request) {
   try {
+    const ctx = await requirePerm('proposals.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(request.url)
     const q = url.searchParams.get('q')?.trim() ?? ''
     const status = url.searchParams.get('status')?.trim() ?? ''
@@ -64,6 +69,7 @@ export async function GET(request: Request) {
 
     const proposals = await db.proposal.findMany({
       where: {
+        tenantId: user.tenantId,
         ...(status ? { status } : {}),
         ...(thirdPartyId ? { thirdPartyId } : {}),
       },
@@ -96,6 +102,10 @@ export async function GET(request: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(request: Request) {
   try {
+    const ctx = await requirePerm('proposals.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await request.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -106,16 +116,19 @@ export async function POST(request: Request) {
     }
     const { thirdPartyId, date, validUntil, notes, lines } = parsed.data
 
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) {
       return NextResponse.json({ error: 'Third party not found' }, { status: 400 })
     }
 
     const totals = computeTotals(lines)
-    const proposal = await createWithRef('PR', (ref) =>
+    const proposal = await createWithRef(user.tenantId, 'PR', (ref) =>
       db.proposal.create({
         data: {
           ref,
+          tenantId: user.tenantId,
           thirdPartyId,
           status: 'DRAFT',
           date: date ? new Date(date) : new Date(),

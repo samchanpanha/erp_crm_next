@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -63,16 +64,22 @@ const employeeMini = { select: { id: true, firstName: true, lastName: true, empl
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('leave.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const status = searchParams.get('status') ?? ''
     const employeeId = searchParams.get('employeeId')?.trim() ?? ''
     const type = searchParams.get('type') ?? ''
 
     const where: {
+      tenantId?: string
       status?: LeaveStatus
       employeeId?: string
       type?: LeaveType
     } = {}
+    where.tenantId = user.tenantId
 
     if ((STATUSES as readonly string[]).includes(status)) where.status = status as LeaveStatus
     if (employeeId) where.employeeId = employeeId
@@ -97,14 +104,18 @@ export async function GET(req: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('leave.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') return bad('Invalid request body')
 
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) return bad(firstIssueMessage(parsed.error))
 
-    const employee = await db.employee.findUnique({
-      where: { id: parsed.data.employeeId },
+    const employee = await db.employee.findFirst({
+      where: { id: parsed.data.employeeId, tenantId: user.tenantId },
       select: { id: true },
     })
     if (!employee) return bad('Employee not found', 400)
@@ -117,6 +128,7 @@ export async function POST(req: Request) {
 
     const created = await db.leaveRequest.create({
       data: {
+        tenantId: user.tenantId,
         employeeId: parsed.data.employeeId,
         type: parsed.data.type,
         startDate: parsed.data.startDate,

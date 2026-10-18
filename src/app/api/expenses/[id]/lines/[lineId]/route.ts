@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -14,10 +15,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string; lineId: string }> },
 ) {
   try {
+    const ctx = await requirePerm('expenses.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id, lineId } = await params
 
-    const report = await db.expenseReport.findUnique({
-      where: { id },
+    const report = await db.expenseReport.findFirst({
+      where: { id, tenantId: user.tenantId },
       select: { id: true, status: true },
     })
     if (!report) return bad('Not found', 404)

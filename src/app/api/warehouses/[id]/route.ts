@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,8 +20,12 @@ const updateSchema = z.object({
 // ---------------------------------------------------------------------------
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('stock.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.warehouse.findUnique({ where: { id } })
+    const existing = await db.warehouse.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!existing) {
       return NextResponse.json({ error: 'Warehouse not found' }, { status: 404 })
     }
@@ -36,10 +41,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const d = parsed.data
 
     const warehouse = await db.$transaction(async (tx) => {
-      // Only one default warehouse at a time
+      // Only one default warehouse at a time (within this tenant)
       if (d.isDefault === true) {
         await tx.warehouse.updateMany({
-          where: { id: { not: id } },
+          where: { tenantId: user.tenantId, id: { not: id } },
           data: { isDefault: false },
         })
       }
@@ -72,9 +77,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('stock.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.warehouse.findUnique({
-      where: { id },
+    const existing = await db.warehouse.findFirst({
+      where: { id, tenantId: user.tenantId },
       select: { id: true, code: true },
     })
     if (!existing) {

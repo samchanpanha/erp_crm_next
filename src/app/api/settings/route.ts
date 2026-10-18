@@ -1,16 +1,23 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requireAuth, requirePerm } from '@/lib/auth'
 import { SETTING_DEFAULTS } from '@/lib/template-schema'
 
 export const dynamic = 'force-dynamic'
 
 // ---------------------------------------------------------------------------
 // GET /api/settings — merged settings map (defaults overlaid by stored values)
+// Every signed-in user may read (print engine + preferences depend on it).
+// Settings are per-tenant (Setting.id cuid PK, @@unique([tenantId, key])).
 // ---------------------------------------------------------------------------
 export async function GET() {
   try {
-    const rows = await db.setting.findMany()
+    const ctx = await requireAuth()
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
+    const rows = await db.setting.findMany({ where: { tenantId: user.tenantId } })
     const stored = Object.fromEntries(rows.map((r) => [r.key, r.value]))
     return NextResponse.json({ data: { ...SETTING_DEFAULTS, ...stored } })
   } catch (err) {
@@ -21,11 +28,16 @@ export async function GET() {
 
 // ---------------------------------------------------------------------------
 // PUT /api/settings — upsert a patch of settings. Returns the merged map.
+// Requires settings.edit. Upserts use the compound unique tenantId_key.
 // ---------------------------------------------------------------------------
 const putSchema = z.record(z.string().min(1).max(100), z.string().max(2_000_000))
 
 export async function PUT(req: Request) {
   try {
+    const ctx = await requirePerm('settings.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = putSchema.safeParse(body)
     if (!parsed.success) {
@@ -40,17 +52,18 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: `Unknown setting keys: ${unknown.join(', ')}` }, { status: 400 })
     }
 
+    const tenantId = user.tenantId
     await db.$transaction(
       Object.entries(patch).map(([key, value]) =>
         db.setting.upsert({
-          where: { key },
+          where: { tenantId_key: { tenantId, key } },
           update: { value },
-          create: { key, value },
+          create: { tenantId, key, value },
         }),
       ),
     )
 
-    const rows = await db.setting.findMany()
+    const rows = await db.setting.findMany({ where: { tenantId } })
     const stored = Object.fromEntries(rows.map((r) => [r.key, r.value]))
     return NextResponse.json({ data: { ...SETTING_DEFAULTS, ...stored } })
   } catch (err) {

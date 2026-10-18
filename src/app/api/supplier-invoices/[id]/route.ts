@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { round2 } from '@/lib/doc-math'
 
 export const dynamic = 'force-dynamic'
@@ -46,10 +47,10 @@ const fullInclude = {
  * schema is frozen) — merge the PO ref manually to keep the API contract
  * `purchaseOrder: { id, ref } | null` intact.
  */
-async function withPurchaseOrder<T extends { purchaseOrderId: string | null }>(invoice: T) {
+async function withPurchaseOrder<T extends { purchaseOrderId: string | null }>(invoice: T, tenantId: string) {
   if (!invoice.purchaseOrderId) return { ...invoice, purchaseOrder: null }
-  const po = await db.purchaseOrder.findUnique({
-    where: { id: invoice.purchaseOrderId },
+  const po = await db.purchaseOrder.findFirst({
+    where: { id: invoice.purchaseOrderId, tenantId },
     select: { id: true, ref: true },
   })
   return { ...invoice, purchaseOrder: po }
@@ -61,10 +62,17 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('supplierinvoices.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const invoice = await db.supplierInvoice.findUnique({ where: { id }, include: fullInclude })
+    const invoice = await db.supplierInvoice.findFirst({
+      where: { id, tenantId: user.tenantId },
+      include: fullInclude,
+    })
     if (!invoice) return NextResponse.json({ error: 'Supplier invoice not found' }, { status: 404 })
-    return NextResponse.json({ data: await withPurchaseOrder(invoice) })
+    return NextResponse.json({ data: await withPurchaseOrder(invoice, user.tenantId) })
   } catch (err) {
     console.error('GET /api/supplier-invoices/[id] failed', err)
     return NextResponse.json({ error: 'Failed to load supplier invoice' }, { status: 500 })
@@ -82,13 +90,19 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('supplierinvoices.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
     const body: unknown = await req.json().catch(() => null)
     if (!body || typeof body !== 'object') {
       return NextResponse.json({ error: 'Invalid payload' }, { status: 400 })
     }
 
-    const existing = await db.supplierInvoice.findUnique({ where: { id } })
+    const existing = await db.supplierInvoice.findFirst({
+      where: { id, tenantId: user.tenantId },
+    })
     if (!existing) return NextResponse.json({ error: 'Supplier invoice not found' }, { status: 404 })
 
     // ---- Action branch ------------------------------------------------------
@@ -108,7 +122,7 @@ export async function PUT(
           data: { status: 'UNPAID' },
           include: fullInclude,
         })
-        return NextResponse.json({ data: await withPurchaseOrder(updated) })
+        return NextResponse.json({ data: await withPurchaseOrder(updated, user.tenantId) })
       }
 
       // cancel
@@ -123,7 +137,7 @@ export async function PUT(
         data: { status: 'CANCELLED' },
         include: fullInclude,
       })
-      return NextResponse.json({ data: await withPurchaseOrder(updated) })
+      return NextResponse.json({ data: await withPurchaseOrder(updated, user.tenantId) })
     }
 
     // ---- Full edit branch (DRAFT only) --------------------------------------
@@ -141,10 +155,14 @@ export async function PUT(
       )
     }
     const { thirdPartyId, date, dueDate, subtotal, vatTotal, notes, purchaseOrderId } = parsed.data
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) return NextResponse.json({ error: 'Supplier not found' }, { status: 404 })
     if (purchaseOrderId) {
-      const po = await db.purchaseOrder.findUnique({ where: { id: purchaseOrderId } })
+      const po = await db.purchaseOrder.findFirst({
+        where: { id: purchaseOrderId, tenantId: user.tenantId },
+      })
       if (!po) return NextResponse.json({ error: 'Purchase order not found' }, { status: 404 })
     }
 
@@ -163,7 +181,7 @@ export async function PUT(
       },
       include: fullInclude,
     })
-    return NextResponse.json({ data: await withPurchaseOrder(updated) })
+    return NextResponse.json({ data: await withPurchaseOrder(updated, user.tenantId) })
   } catch (err) {
     console.error('PUT /api/supplier-invoices/[id] failed', err)
     return NextResponse.json({ error: 'Failed to update supplier invoice' }, { status: 500 })
@@ -176,8 +194,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('supplierinvoices.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.supplierInvoice.findUnique({ where: { id } })
+    const existing = await db.supplierInvoice.findFirst({
+      where: { id, tenantId: user.tenantId },
+    })
     if (!existing) return NextResponse.json({ error: 'Supplier invoice not found' }, { status: 404 })
     if (existing.status !== 'DRAFT') {
       return NextResponse.json(

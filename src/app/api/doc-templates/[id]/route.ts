@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requireAuth, requirePerm } from '@/lib/auth'
 import { templateConfigSchema } from '@/lib/template-schema'
 
 export const dynamic = 'force-dynamic'
@@ -8,12 +9,18 @@ export const dynamic = 'force-dynamic'
 type Params = { params: Promise<{ id: string }> }
 
 // ---------------------------------------------------------------------------
-// GET /api/doc-templates/[id]
+// GET /api/doc-templates/[id] — any signed-in user (print dialogs read this).
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: Params) {
   try {
+    const ctx = await requireAuth()
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const template = await db.docTemplate.findUnique({ where: { id } })
+    const template = await db.docTemplate.findFirst({
+      where: { id, tenantId: user.tenantId },
+    })
     if (!template) return NextResponse.json({ error: 'Template not found' }, { status: 404 })
     return NextResponse.json({ data: template })
   } catch (err) {
@@ -23,7 +30,9 @@ export async function GET(_req: Request, { params }: Params) {
 }
 
 // ---------------------------------------------------------------------------
-// PUT /api/doc-templates/[id] — update name / isDefault / config (partial OK)
+// PUT /api/doc-templates/[id] — update name / isDefault / config (partial OK).
+// The "unset other defaults of same type" sweep is scoped to the tenant.
+// Requires settings.edit.
 // ---------------------------------------------------------------------------
 const putSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
@@ -33,8 +42,14 @@ const putSchema = z.object({
 
 export async function PUT(req: Request, { params }: Params) {
   try {
+    const ctx = await requirePerm('settings.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.docTemplate.findUnique({ where: { id } })
+    const existing = await db.docTemplate.findFirst({
+      where: { id, tenantId: user.tenantId },
+    })
     if (!existing) return NextResponse.json({ error: 'Template not found' }, { status: 404 })
 
     const body = await req.json().catch(() => null)
@@ -54,7 +69,7 @@ export async function PUT(req: Request, { params }: Params) {
     const template = await db.$transaction(async (tx) => {
       if (d.isDefault) {
         await tx.docTemplate.updateMany({
-          where: { type: existing.type, id: { not: id } },
+          where: { tenantId: user.tenantId, type: existing.type, id: { not: id } },
           data: { isDefault: false },
         })
       }
@@ -76,12 +91,18 @@ export async function PUT(req: Request, { params }: Params) {
 }
 
 // ---------------------------------------------------------------------------
-// DELETE /api/doc-templates/[id]
+// DELETE /api/doc-templates/[id] — requires settings.edit.
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: Params) {
   try {
+    const ctx = await requirePerm('settings.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.docTemplate.findUnique({ where: { id } })
+    const existing = await db.docTemplate.findFirst({
+      where: { id, tenantId: user.tenantId },
+    })
     if (!existing) return NextResponse.json({ error: 'Template not found' }, { status: 404 })
     await db.docTemplate.delete({ where: { id } })
     return NextResponse.json({ data: { ok: true } })

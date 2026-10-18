@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 
 export const dynamic = 'force-dynamic'
@@ -45,13 +46,17 @@ async function loggedByTask(taskIds: string[]): Promise<Map<string, { hours: num
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('projects.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(req.url)
     const q = url.searchParams.get('q')?.trim()
     const projectId = url.searchParams.get('projectId')
     const status = url.searchParams.get('status')
     const priority = url.searchParams.get('priority')
 
-    const where: Prisma.TaskWhereInput = {}
+    const where: Prisma.TaskWhereInput = { tenantId: user.tenantId }
     if (projectId) where.projectId = projectId
     if (status && ['TODO', 'IN_PROGRESS', 'DONE', 'CANCELLED'].includes(status)) where.status = status
     if (priority && ['LOW', 'MEDIUM', 'HIGH', 'URGENT'].includes(priority)) where.priority = priority
@@ -97,6 +102,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('projects.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -107,7 +116,10 @@ export async function POST(req: Request) {
     }
     const d = parsed.data
 
-    const project = await db.project.findUnique({ where: { id: d.projectId }, select: { id: true } })
+    const project = await db.project.findFirst({
+      where: { id: d.projectId, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!project) {
       return NextResponse.json({ error: 'Project not found' }, { status: 400 })
     }
@@ -118,8 +130,8 @@ export async function POST(req: Request) {
     let task: Awaited<ReturnType<typeof createTask>> | null = null
     for (let attempt = 0; attempt < 5 && !task; attempt++) {
       try {
-        const ref = await nextRef('TS')
-        task = await createTask(ref, d, progress)
+        const ref = await nextRef(user.tenantId, 'TS')
+        task = await createTask(ref, d, progress, user.tenantId)
       } catch (e) {
         if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') continue
         throw e
@@ -140,11 +152,13 @@ async function createTask(
   ref: string,
   d: z.infer<typeof createSchema>,
   progress: number,
+  tenantId: string,
 ): Promise<
   Prisma.TaskGetPayload<{ include: { project: { select: { id: true; ref: true; title: true } } } }>
 > {
   return db.task.create({
     data: {
+      tenantId,
       projectId: d.projectId,
       ref,
       label: d.label,

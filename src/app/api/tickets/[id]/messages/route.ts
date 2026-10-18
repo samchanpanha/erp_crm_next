@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,8 +28,15 @@ const bad = (message: string, status = 400) => NextResponse.json({ error: messag
 // ---------------------------------------------------------------------------
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('tickets.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const ticket = await db.ticket.findUnique({ where: { id }, select: { id: true } })
+    const ticket = await db.ticket.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!ticket) return bad('Ticket not found', 404)
 
     const body = await req.json().catch(() => null)

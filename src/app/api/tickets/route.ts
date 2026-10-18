@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 
 export const dynamic = 'force-dynamic'
@@ -95,6 +96,10 @@ function sortTickets<T extends { status: string; priority: string; createdAt: Da
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('tickets.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const q = searchParams.get('q')?.trim() ?? ''
     const status = searchParams.get('status')?.trim() ?? ''
@@ -103,6 +108,7 @@ export async function GET(req: Request) {
     const thirdPartyId = searchParams.get('thirdPartyId')?.trim() ?? ''
 
     const where: {
+      tenantId?: string
       status?: TicketStatus
       priority?: TicketPriority
       category?: string
@@ -112,6 +118,7 @@ export async function GET(req: Request) {
         | { thirdParty: { is: { name: { contains: string } } } }
       )[]
     } = {}
+    where.tenantId = user.tenantId
 
     if ((TICKET_STATUSES as readonly string[]).includes(status)) where.status = status as TicketStatus
     if ((TICKET_PRIORITIES as readonly string[]).includes(priority))
@@ -139,6 +146,10 @@ export async function GET(req: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('tickets.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') return bad('Invalid request body')
 
@@ -148,8 +159,8 @@ export async function POST(req: Request) {
     const { thirdPartyId, ...rest } = parsed.data
 
     if (thirdPartyId) {
-      const tp = await db.thirdParty.findUnique({
-        where: { id: thirdPartyId },
+      const tp = await db.thirdParty.findFirst({
+        where: { id: thirdPartyId, tenantId: user.tenantId },
         select: { id: true },
       })
       if (!tp) return bad('Third party not found')
@@ -161,9 +172,9 @@ export async function POST(req: Request) {
     let created: Prisma.TicketGetPayload<{ include: typeof ticketInclude }> | null = null
     for (let attempt = 0; attempt < 5 && !created; attempt++) {
       try {
-        const ref = await nextRef('TK')
+        const ref = await nextRef(user.tenantId, 'TK')
         created = await db.ticket.create({
-          data: { ...rest, thirdPartyId: thirdPartyId ?? null, ref },
+          data: { ...rest, thirdPartyId: thirdPartyId ?? null, ref, tenantId: user.tenantId },
           include: ticketInclude,
         })
       } catch (e) {

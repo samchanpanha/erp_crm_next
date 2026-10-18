@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 import { computeTotals } from '@/lib/doc-math'
 
@@ -34,10 +35,10 @@ const createSchema = z.object({
 
 /** Create a doc with a fresh ref, retrying on ref collisions (seed data
  *  pre-allocates refs without hydrating the Sequence table). */
-async function createWithRef<T>(prefix: string, make: (ref: string) => Promise<T>): Promise<T> {
+async function createWithRef<T>(tenantId: string, prefix: string, make: (ref: string) => Promise<T>): Promise<T> {
   let lastErr: unknown
   for (let attempt = 0; attempt < 12; attempt++) {
-    const ref = await nextRef(prefix)
+    const ref = await nextRef(tenantId, prefix)
     try {
       return await make(ref)
     } catch (e) {
@@ -54,6 +55,10 @@ async function createWithRef<T>(prefix: string, make: (ref: string) => Promise<T
 // ---------------------------------------------------------------------------
 export async function GET(request: Request) {
   try {
+    const ctx = await requirePerm('invoices.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(request.url)
     const q = url.searchParams.get('q')?.trim() ?? ''
     const status = url.searchParams.get('status')?.trim() ?? ''
@@ -61,6 +66,7 @@ export async function GET(request: Request) {
 
     const invoices = await db.invoice.findMany({
       where: {
+        tenantId: user.tenantId,
         ...(status ? { status } : {}),
         ...(thirdPartyId ? { thirdPartyId } : {}),
       },
@@ -93,6 +99,10 @@ export async function GET(request: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(request: Request) {
   try {
+    const ctx = await requirePerm('invoices.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await request.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -103,16 +113,19 @@ export async function POST(request: Request) {
     }
     const { thirdPartyId, date, dueDate, notes, lines } = parsed.data
 
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) {
       return NextResponse.json({ error: 'Third party not found' }, { status: 400 })
     }
 
     const totals = computeTotals(lines)
-    const invoice = await createWithRef('IN', (ref) =>
+    const invoice = await createWithRef(user.tenantId, 'IN', (ref) =>
       db.invoice.create({
         data: {
           ref,
+          tenantId: user.tenantId,
           thirdPartyId,
           status: 'DRAFT',
           date: date ? new Date(date) : new Date(),

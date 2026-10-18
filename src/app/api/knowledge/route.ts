@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,16 +38,22 @@ function firstIssueMessage(err: z.ZodError): string {
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('knowledge.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const q = searchParams.get('q')?.trim() ?? ''
     const status = searchParams.get('status')?.trim() ?? ''
     const category = searchParams.get('category')?.trim() ?? ''
 
     const where: {
+      tenantId?: string
       status?: KbStatus
       category?: string
       OR?: ({ title: { contains: string } } | { content: { contains: string } })[]
     } = {}
+    where.tenantId = user.tenantId
 
     if ((KB_STATUSES as readonly string[]).includes(status)) where.status = status as KbStatus
     if (category) where.category = category
@@ -69,13 +76,17 @@ export async function GET(req: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('knowledge.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') return bad('Invalid request body')
 
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) return bad(firstIssueMessage(parsed.error))
 
-    const created = await db.knowledgeArticle.create({ data: parsed.data })
+    const created = await db.knowledgeArticle.create({ data: { ...parsed.data, tenantId: user.tenantId } })
 
     return NextResponse.json({ data: created }, { status: 201 })
   } catch (err) {

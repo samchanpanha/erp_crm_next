@@ -7,9 +7,12 @@ import {
   LayoutDashboard, Building2, Target, FileText, ShoppingCart, FileSignature,
   Receipt, CreditCard, Landmark, Truck, PackageCheck, Package, Boxes,
   FolderKanban, Users, Palmtree, Wallet, LifeBuoy, BookOpen, CalendarDays,
-  ChartColumn, Settings as SettingsIcon, Menu, Search, Plus, type LucideIcon,
+  ChartColumn, Settings as SettingsIcon, Menu, Search, Plus, LogOut,
+  ShieldCheck, Loader2, type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { canView, canEdit } from '@/lib/permissions'
+import { useAuthStore, type SessionUser } from '@/lib/auth-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet'
@@ -19,6 +22,7 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import AuthScreen from '@/components/erp/auth-screen'
 
 const loadingFallback = () => (
   <div className="flex h-64 items-center justify-center gap-3 text-muted-foreground">
@@ -87,7 +91,37 @@ export const NAV: NavGroup[] = [
     ],
   },
   { group: 'Productivity', items: [{ key: 'agenda', label: 'Agenda', icon: CalendarDays }] },
-  { group: 'Configuration', items: [{ key: 'settings', label: 'Settings', icon: SettingsIcon }] },
+  {
+    group: 'Configuration',
+    items: [
+      { key: 'settings', label: 'Settings', icon: SettingsIcon },
+      { key: 'users', label: 'Users & Roles', icon: ShieldCheck },
+    ],
+  },
+]
+
+/** Nav key → permission module (dashboard has no entry: always visible) */
+const NAV_PERMISSIONS: Record<string, string> = {
+  reports: 'reports', 'third-parties': 'thirdparties', opportunities: 'opportunities',
+  proposals: 'proposals', 'sale-orders': 'saleorders', contracts: 'contracts',
+  invoices: 'invoices', payments: 'payments', bank: 'bank',
+  'purchase-orders': 'purchaseorders', 'supplier-invoices': 'supplierinvoices',
+  products: 'products', stock: 'stock', projects: 'projects',
+  employees: 'employees', leave: 'leave', expenses: 'expenses',
+  tickets: 'tickets', knowledge: 'knowledge', agenda: 'agenda',
+  settings: 'settings', users: 'administration',
+}
+
+/** Quick-create entries, gated by the target module's .edit permission */
+const QUICK_CREATE_ITEMS: { key: string; label: string; module: string }[] = [
+  { key: 'third-parties', label: 'Third party / contact', module: 'thirdparties' },
+  { key: 'proposals', label: 'Commercial proposal', module: 'proposals' },
+  { key: 'sale-orders', label: 'Sale order', module: 'saleorders' },
+  { key: 'invoices', label: 'Customer invoice', module: 'invoices' },
+  { key: 'products', label: 'Product / service', module: 'products' },
+  { key: 'tickets', label: 'Support ticket', module: 'tickets' },
+  { key: 'projects', label: 'Project', module: 'projects' },
+  { key: 'agenda', label: 'Agenda event', module: 'agenda' },
 ]
 
 /** Lazily loaded module views (files created incrementally per module agent) */
@@ -114,19 +148,40 @@ const MODULE_VIEWS: Record<string, React.ComponentType> = {
   agenda: dynamic(() => import('./modules/agenda'), { ssr: false, loading: loadingFallback }),
   reports: dynamic(() => import('./modules/reports'), { ssr: false, loading: loadingFallback }),
   settings: dynamic(() => import('./modules/settings'), { ssr: false, loading: loadingFallback }),
+  users: dynamic(() => import('./modules/users'), { ssr: false, loading: loadingFallback }),
 }
 
-function useHashRoute(): string {
+/** Keep only nav items the user may view; drop groups that become empty. */
+function filterNav(user: SessionUser): NavGroup[] {
+  return NAV
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((item) => {
+        const moduleName = NAV_PERMISSIONS[item.key]
+        return !moduleName || canView(user.permissions, moduleName)
+      }),
+    }))
+    .filter((g) => g.items.length > 0)
+}
+
+function userInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).slice(0, 2)
+  const chars = parts.map((p) => p[0]?.toUpperCase() ?? '').join('')
+  return chars || 'U'
+}
+
+function useHashRoute(allowed: Set<string>): string {
   const [route, setRoute] = useState('dashboard')
   useEffect(() => {
     const read = () => {
       const h = window.location.hash.replace(/^#\/?/, '') || 'dashboard'
-      setRoute(h in MODULE_VIEWS ? h : 'dashboard')
+      // Hidden (permission-gated) or unknown modules fall back to the dashboard
+      setRoute(h in MODULE_VIEWS && allowed.has(h) ? h : 'dashboard')
     }
     read()
     window.addEventListener('hashchange', read)
     return () => window.removeEventListener('hashchange', read)
-  }, [])
+  }, [allowed])
   return route
 }
 
@@ -148,7 +203,7 @@ function Logo() {
   )
 }
 
-function SidebarContent({ current }: { current: string }) {
+function SidebarContent({ current, nav }: { current: string; nav: NavGroup[] }) {
   return (
     <div className="flex h-full flex-col">
       <div className="px-4 py-4">
@@ -156,7 +211,7 @@ function SidebarContent({ current }: { current: string }) {
       </div>
       <ScrollArea className="flex-1 px-2 pb-4">
         <nav aria-label="ERP modules" className="space-y-4">
-          {NAV.map((g) => (
+          {nav.map((g) => (
             <div key={g.group}>
               <p className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
                 {g.group}
@@ -194,13 +249,96 @@ function SidebarContent({ current }: { current: string }) {
   )
 }
 
-function TopBar({ current, onOpenMobileNav }: { current: string; onOpenMobileNav: () => void }) {
+function AccountMenu({ user }: { user: SessionUser }) {
+  const logout = useAuthStore((s) => s.logout)
+  const [signingOut, setSigningOut] = useState(false)
+  const can = (module: string) => canView(user.permissions, module)
+
+  async function handleSignOut() {
+    if (signingOut) return
+    setSigningOut(true)
+    await logout()
+    setSigningOut(false)
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="rounded-full outline-none ring-primary focus-visible:ring-2" aria-label="Account menu">
+          <Avatar className="h-9 w-9">
+            <AvatarFallback className="bg-primary/10 text-primary text-sm font-semibold">
+              {userInitials(user.name)}
+            </AvatarFallback>
+          </Avatar>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuLabel className="font-normal">
+          <div className="flex flex-col">
+            <span className="text-sm font-semibold">{user.name}</span>
+            <span className="truncate text-xs text-muted-foreground">{user.email}</span>
+            <span className="mt-1 truncate text-[11px] text-muted-foreground">
+              {user.role?.name ?? 'No role'} · {user.tenant.name}
+            </span>
+          </div>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {can('agenda') && (
+          <DropdownMenuItem onClick={() => navigate('agenda')}>
+            <CalendarDays className="h-4 w-4" aria-hidden="true" />
+            My agenda
+          </DropdownMenuItem>
+        )}
+        {can('employees') && (
+          <DropdownMenuItem onClick={() => navigate('employees')}>
+            <Users className="h-4 w-4" aria-hidden="true" />
+            My HR space
+          </DropdownMenuItem>
+        )}
+        {can('settings') && (
+          <DropdownMenuItem onClick={() => navigate('settings')}>
+            <SettingsIcon className="h-4 w-4" aria-hidden="true" />
+            Settings
+          </DropdownMenuItem>
+        )}
+        {can('administration') && (
+          <DropdownMenuItem onClick={() => navigate('users')}>
+            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+            Users &amp; Roles
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          disabled={signingOut}
+          onClick={() => void handleSignOut()}
+          aria-busy={signingOut}
+        >
+          {signingOut
+            ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            : <LogOut className="h-4 w-4" aria-hidden="true" />}
+          {signingOut ? 'Signing out…' : 'Sign out'}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function TopBar({
+  user, nav, quickCreateItems, onOpenMobileNav,
+}: {
+  user: SessionUser
+  nav: NavGroup[]
+  quickCreateItems: { key: string; label: string }[]
+  onOpenMobileNav: () => void
+}) {
   const [query, setQuery] = useState('')
   const results = useMemo(() => {
     if (!query.trim()) return []
     const q = query.toLowerCase()
-    return NAV.flatMap((g) => g.items.filter((i) => i.label.toLowerCase().includes(q)).map((i) => i)).slice(0, 6)
-  }, [query])
+    return nav
+      .flatMap((g) => g.items.filter((i) => i.label.toLowerCase().includes(q)).map((i) => i))
+      .slice(0, 6)
+  }, [query, nav])
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
@@ -234,47 +372,27 @@ function TopBar({ current, onOpenMobileNav }: { current: string; onOpenMobileNav
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button size="sm" className="h-9 gap-1.5">
-              <Plus className="h-4 w-4" />
-              <span className="hidden sm:inline">Quick create</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuLabel>New record</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigate('third-parties')}>Third party / contact</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('proposals')}>Commercial proposal</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('sale-orders')}>Sale order</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('invoices')}>Customer invoice</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('products')}>Product / service</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('tickets')}>Support ticket</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('projects')}>Project</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('agenda')}>Agenda event</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {quickCreateItems.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" className="h-9 gap-1.5">
+                <Plus className="h-4 w-4" />
+                <span className="hidden sm:inline">Quick create</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuLabel>New record</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {quickCreateItems.map((item) => (
+                <DropdownMenuItem key={item.key} onClick={() => navigate(item.key)}>
+                  {item.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="rounded-full outline-none ring-primary focus-visible:ring-2" aria-label="Account menu">
-              <Avatar className="h-9 w-9">
-                <AvatarFallback className="bg-primary/10 text-primary text-sm font-semibold">AM</AvatarFallback>
-              </Avatar>
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuLabel>Alice Martin</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigate('employees')}>My HR space</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate('agenda')}>My agenda</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => navigate('settings')}>
-              <SettingsIcon className="h-4 w-4" aria-hidden="true" />
-              Settings
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <AccountMenu user={user} />
       </div>
     </header>
   )
@@ -290,8 +408,18 @@ function ModulePlaceholder({ current }: { current: string }) {
   )
 }
 
-export default function ErpApp() {
-  const route = useHashRoute()
+/** Signed-in ERP shell (remounted per user via key={user.id} → fresh QueryClient) */
+function ErpApp({ user }: { user: SessionUser }) {
+  const nav = useMemo(() => filterNav(user), [user])
+  const allowedKeys = useMemo(
+    () => new Set(nav.flatMap((g) => g.items.map((i) => i.key))),
+    [nav],
+  )
+  const route = useHashRoute(allowedKeys)
+  const quickCreateItems = useMemo(
+    () => QUICK_CREATE_ITEMS.filter((i) => canEdit(user.permissions, i.module)),
+    [user],
+  )
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const queryClient = useMemo(() => new QueryClient({
     defaultOptions: { queries: { staleTime: 15_000, retry: 1, refetchOnWindowFocus: false } },
@@ -304,7 +432,7 @@ export default function ErpApp() {
           {/* Desktop sidebar */}
           <aside className="hidden lg:block w-60 shrink-0 border-r bg-background">
             <div className="sticky top-0 h-screen">
-              <SidebarContent current={route} />
+              <SidebarContent current={route} nav={nav} />
             </div>
           </aside>
 
@@ -315,13 +443,18 @@ export default function ErpApp() {
             </SheetTrigger>
             <SheetContent side="left" className="w-72 p-0">
               <SheetTitle className="sr-only">Navigation</SheetTitle>
-              <SidebarContent current={route} />
+              <SidebarContent current={route} nav={nav} />
             </SheetContent>
           </Sheet>
 
           {/* Main column */}
           <div className="flex min-w-0 flex-1 flex-col">
-            <TopBar current={route} onOpenMobileNav={() => setMobileNavOpen(true)} />
+            <TopBar
+              user={user}
+              nav={nav}
+              quickCreateItems={quickCreateItems}
+              onOpenMobileNav={() => setMobileNavOpen(true)}
+            />
             <main className="flex-1 px-4 py-5 sm:px-6 sm:py-6">
               <div className="mx-auto w-full max-w-7xl">
                 {View ? <View /> : <ModulePlaceholder current={route} />}
@@ -330,9 +463,76 @@ export default function ErpApp() {
             <footer className="mt-auto border-t bg-background px-4 py-3 text-center text-xs text-muted-foreground sm:px-6">
               DoliNext ERP &amp; CRM — an open rebuild of the Dolibarr feature set ·
               CRM · Sales · Purchasing · Stock · Finance · Projects · HR · Support
+              {' · '}{user.tenant.name}
             </footer>
           </div>
         </div>
     </QueryClientProvider>
   )
+}
+
+/** Centered splash while the session is being restored */
+function Splash() {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background" role="status" aria-live="polite">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary font-black text-primary-foreground shadow-sm">
+        DN
+      </div>
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden="true" />
+        <span className="text-sm">Loading your workspace…</span>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Default export — the auth-aware root.
+ * loading → splash · anon → AuthScreen · authed → ErpApp (fresh per user).
+ */
+export default function ErpRoot() {
+  const status = useAuthStore((s) => s.status)
+  const user = useAuthStore((s) => s.user)
+  const init = useAuthStore((s) => s.init)
+  const forceSignOut = useAuthStore((s) => s.forceSignOut)
+
+  // Restore the session once on mount
+  useEffect(() => {
+    void init()
+  }, [init])
+
+  // Session watchdog: immediate check + every 60s + on focus/visibility.
+  // Silent while authed — only a 401 drops the local session.
+  useEffect(() => {
+    if (status !== 'authed') return
+    let alive = true
+    const check = async () => {
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
+        if (alive && res.status === 401) {
+          forceSignOut()
+          window.location.hash = '#/dashboard'
+        }
+      } catch {
+        // network hiccup — keep the current session state
+      }
+    }
+    void check()
+    const id = window.setInterval(() => { void check() }, 60_000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void check()
+    }
+    window.addEventListener('focus', onVisible)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      alive = false
+      window.clearInterval(id)
+      window.removeEventListener('focus', onVisible)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [status, forceSignOut])
+
+  if (status === 'loading') return <Splash />
+  if (status === 'anon' || !user) return <AuthScreen />
+  return <ErpApp key={user.id} user={user} />
 }

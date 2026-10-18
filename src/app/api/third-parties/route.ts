@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef, REF_PREFIX } from '@/lib/refs'
 
 export const dynamic = 'force-dynamic'
@@ -125,16 +126,22 @@ function isUniqueViolation(err: unknown): boolean {
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('thirdparties.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const q = searchParams.get('q')?.trim() ?? ''
     const type = searchParams.get('type') ?? ''
     const status = searchParams.get('status') ?? ''
 
     const where: {
+      tenantId?: string
       OR?: Record<string, { contains: string }>[]
       type?: TPType
       status?: TPStatus
     } = {}
+    where.tenantId = user.tenantId
 
     if (q) {
       where.OR = [
@@ -175,19 +182,23 @@ export async function GET(req: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('thirdparties.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') return bad('Invalid request body')
 
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) return bad(firstIssueMessage(parsed.error))
 
-    // nextRef() starts at 1 while the demo seed hard-coded CU codes, so the first
+    // nextRef(tenantId, ...) starts at 1 while the demo seed hard-coded CU codes, so the first
     // generated codes may collide — consume sequence numbers until one is free.
     for (let attempt = 0; attempt < 30; attempt++) {
-      const code = await nextRef(REF_PREFIX.thirdParty)
+      const code = await nextRef(user.tenantId, REF_PREFIX.thirdParty)
       try {
         const created = await db.thirdParty.create({
-          data: { ...parsed.data, code },
+          data: { ...parsed.data, code, tenantId: user.tenantId },
           include: {
             _count: {
               select: { contacts: true, opportunities: true, proposals: true, saleOrders: true, invoices: true },

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 import {
   dayEnd,
@@ -31,6 +32,10 @@ const STATUS_ORDER = ['UNPAID', 'PARTIAL', 'PAID', 'CANCELLED'] as const
 
 export async function GET(request: Request) {
   try {
+    const ctx = await requirePerm('reports.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const parsed = querySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams))
     if (!parsed.success) {
       return NextResponse.json(
@@ -58,11 +63,11 @@ export async function GET(request: Request) {
 
     const [invoices, payments] = await Promise.all([
       db.invoice.findMany({
-        where: { status: { not: 'DRAFT' }, date: { gte: windowStart, lte: windowEnd } },
+        where: { tenantId: user.tenantId, status: { not: 'DRAFT' }, date: { gte: windowStart, lte: windowEnd } },
         select: { status: true, total: true, paidAmount: true, date: true },
       }),
       db.payment.findMany({
-        where: { invoiceId: { not: null }, date: { gte: windowStart, lte: windowEnd } },
+        where: { tenantId: user.tenantId, invoiceId: { not: null }, date: { gte: windowStart, lte: windowEnd } },
         select: { amount: true, date: true },
       }),
     ])

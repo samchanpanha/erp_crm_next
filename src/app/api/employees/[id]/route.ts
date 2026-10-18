@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -87,9 +88,13 @@ const detailInclude = {
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('employees.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const employee = await db.employee.findUnique({
-      where: { id },
+    const employee = await db.employee.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: detailInclude,
     })
     if (!employee) return bad('Not found', 404)
@@ -105,8 +110,15 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // ---------------------------------------------------------------------------
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('employees.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.employee.findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.employee.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!existing) return bad('Not found', 404)
 
     const body = await req.json().catch(() => null)
@@ -139,8 +151,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('employees.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.employee.findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.employee.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!existing) return bad('Not found', 404)
 
     const [leaves, expenses] = await Promise.all([

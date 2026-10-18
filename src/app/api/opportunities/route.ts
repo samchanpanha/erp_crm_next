@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -99,12 +100,17 @@ const opportunityInclude = {
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('opportunities.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const stage = searchParams.get('stage') ?? ''
     const thirdPartyId = searchParams.get('thirdPartyId')?.trim() ?? ''
     const q = searchParams.get('q')?.trim() ?? ''
 
     const where: {
+      tenantId?: string
       stage?: Stage
       thirdPartyId?: string
       OR?: (
@@ -112,6 +118,7 @@ export async function GET(req: Request) {
         | { thirdParty: { is: { name: { contains: string } } } }
       )[]
     } = {}
+    where.tenantId = user.tenantId
 
     if ((STAGES as readonly string[]).includes(stage)) where.stage = stage as Stage
     if (thirdPartyId) where.thirdPartyId = thirdPartyId
@@ -140,20 +147,24 @@ export async function GET(req: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('opportunities.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') return bad('Invalid request body')
 
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) return bad(firstIssueMessage(parsed.error))
 
-    const tp = await db.thirdParty.findUnique({
-      where: { id: parsed.data.thirdPartyId },
+    const tp = await db.thirdParty.findFirst({
+      where: { id: parsed.data.thirdPartyId, tenantId: user.tenantId },
       select: { id: true },
     })
     if (!tp) return bad('Third party not found')
 
     const created = await db.opportunity.create({
-      data: parsed.data,
+      data: { ...parsed.data, tenantId: user.tenantId },
       include: opportunityInclude,
     })
 

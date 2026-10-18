@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,8 +28,15 @@ const employeeSelect = { select: { id: true, firstName: true, lastName: true } }
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('projects.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const task = await db.task.findUnique({ where: { id }, select: { id: true } })
+    const task = await db.task.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
     }
@@ -62,8 +70,15 @@ const createSchema = z.object({
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('projects.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const task = await db.task.findUnique({ where: { id }, select: { id: true, ref: true } })
+    const task = await db.task.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true, ref: true },
+    })
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
     }
@@ -79,7 +94,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const d = parsed.data
 
     if (d.employeeId) {
-      const employee = await db.employee.findUnique({ where: { id: d.employeeId }, select: { id: true } })
+      const employee = await db.employee.findFirst({
+        where: { id: d.employeeId, tenantId: user.tenantId },
+        select: { id: true },
+      })
       if (!employee) {
         return NextResponse.json({ error: 'Employee not found' }, { status: 400 })
       }

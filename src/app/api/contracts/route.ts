@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 
 export const dynamic = 'force-dynamic'
@@ -17,12 +18,16 @@ const optionalDate = z
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('contracts.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(req.url)
     const q = url.searchParams.get('q')?.trim() ?? ''
     const status = url.searchParams.get('status')?.trim() ?? ''
     const thirdPartyId = url.searchParams.get('thirdPartyId')?.trim() ?? ''
 
-    const where: Prisma.ContractWhereInput = {}
+    const where: Prisma.ContractWhereInput = { tenantId: user.tenantId }
     if (['DRAFT', 'ACTIVE', 'EXPIRED', 'CANCELLED'].includes(status)) where.status = status
     if (thirdPartyId) where.thirdPartyId = thirdPartyId
     if (q) {
@@ -61,6 +66,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('contracts.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -71,7 +80,9 @@ export async function POST(req: Request) {
     }
     const d = parsed.data
 
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: d.thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: d.thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) {
       return NextResponse.json({ error: 'Third party not found' }, { status: 404 })
     }
@@ -81,10 +92,11 @@ export async function POST(req: Request) {
     let contract: Awaited<ReturnType<typeof db.contract.findUniqueOrThrow>> | null = null
     for (let attempt = 0; attempt < 5 && !contract; attempt++) {
       try {
-        const ref = await nextRef('CT')
+        const ref = await nextRef(user.tenantId, 'CT')
         contract = await db.contract.create({
           data: {
             ref,
+            tenantId: user.tenantId,
             thirdPartyId: d.thirdPartyId,
             label: d.label,
             status: 'DRAFT',

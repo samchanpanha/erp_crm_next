@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 
 export const dynamic = 'force-dynamic'
@@ -11,13 +12,17 @@ export const dynamic = 'force-dynamic'
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('products.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(req.url)
     const q = url.searchParams.get('q')?.trim()
     const type = url.searchParams.get('type')
     const status = url.searchParams.get('status')
     const lowStock = url.searchParams.get('lowStock')
 
-    const where: Prisma.ProductWhereInput = {}
+    const where: Prisma.ProductWhereInput = { tenantId: user.tenantId }
     if (q) {
       where.OR = [{ ref: { contains: q } }, { label: { contains: q } }]
     }
@@ -66,6 +71,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('products.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -82,9 +91,10 @@ export async function POST(req: Request) {
     let product: Awaited<ReturnType<typeof db.product.findUniqueOrThrow>> | null = null
     for (let attempt = 0; attempt < 5 && !product; attempt++) {
       try {
-        const ref = await nextRef('PD')
+        const ref = await nextRef(user.tenantId, 'PD')
         product = await db.product.create({
           data: {
+            tenantId: user.tenantId,
             ref,
             label: d.label,
             description: d.description || null,
@@ -113,9 +123,12 @@ export async function POST(req: Request) {
     // Record the initial stock as a traceable IN movement (delta-consistent:
     // product.stockQty was already initialized with d.stockQty).
     if (manageStock && d.stockQty > 0) {
-      const defaultWarehouse = await db.warehouse.findFirst({ where: { isDefault: true } })
+      const defaultWarehouse = await db.warehouse.findFirst({
+        where: { isDefault: true, tenantId: user.tenantId },
+      })
       await db.stockMovement.create({
         data: {
+          tenantId: user.tenantId,
           productId: product.id,
           warehouseId: defaultWarehouse?.id ?? null,
           type: 'IN',

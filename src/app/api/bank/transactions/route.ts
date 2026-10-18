@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { round2 } from '@/lib/doc-math'
 import { z } from 'zod'
 
@@ -13,12 +14,16 @@ const CATEGORIES = ['SALES', 'PURCHASES', 'SALARIES', 'EXPENSES', 'TRANSFER', 'O
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('bank.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(req.url)
     const accountId = url.searchParams.get('accountId')?.trim() ?? ''
     const category = url.searchParams.get('category')?.trim() ?? ''
     const q = url.searchParams.get('q')?.trim() ?? ''
 
-    const where: Prisma.BankTransactionWhereInput = {}
+    const where: Prisma.BankTransactionWhereInput = { tenantId: user.tenantId }
     if (accountId) where.accountId = accountId
     if ((CATEGORIES as readonly string[]).includes(category)) where.category = category
     if (q) where.OR = [{ label: { contains: q } }, { reference: { contains: q } }]
@@ -61,6 +66,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('bank.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -71,7 +80,9 @@ export async function POST(req: Request) {
     }
     const d = parsed.data
 
-    const account = await db.bankAccount.findUnique({ where: { id: d.accountId } })
+    const account = await db.bankAccount.findFirst({
+      where: { id: d.accountId, tenantId: user.tenantId },
+    })
     if (!account) {
       return NextResponse.json({ error: 'Bank account not found' }, { status: 404 })
     }
@@ -82,6 +93,7 @@ export async function POST(req: Request) {
     const transaction = await db.$transaction(async (tx) => {
       const created = await tx.bankTransaction.create({
         data: {
+          tenantId: user.tenantId,
           accountId: d.accountId,
           date,
           label: d.label,

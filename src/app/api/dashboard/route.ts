@@ -1,45 +1,52 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { requireAuth } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
+    const ctx = await requireAuth()
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
+    const tenant = user.tenantId
     const [
       thirdPartyCount, productCount, openProposalCount, openOrderCount,
       unpaidInvoices, paidThisYear, lowStockProducts, openTickets,
       pendingLeaves, activeProjects, bankAccounts, upcomingEvents,
       monthlySales, recentInvoices, recentTickets,
     ] = await Promise.all([
-      db.thirdParty.count(),
-      db.product.count(),
-      db.proposal.count({ where: { status: { in: ['DRAFT', 'VALIDATED'] } } }),
-      db.saleOrder.count({ where: { status: { in: ['DRAFT', 'VALIDATED', 'DELIVERED'] } } }),
+      db.thirdParty.count({ where: { tenantId: tenant } }),
+      db.product.count({ where: { tenantId: tenant } }),
+      db.proposal.count({ where: { tenantId: tenant, status: { in: ['DRAFT', 'VALIDATED'] } } }),
+      db.saleOrder.count({ where: { tenantId: tenant, status: { in: ['DRAFT', 'VALIDATED', 'DELIVERED'] } } }),
       db.invoice.findMany({
-        where: { status: { in: ['UNPAID', 'PARTIAL'] } },
+        where: { tenantId: tenant, status: { in: ['UNPAID', 'PARTIAL'] } },
         select: { total: true, paidAmount: true, dueDate: true, ref: true, thirdParty: { select: { name: true } } },
       }),
-      db.payment.aggregate({ _sum: { amount: true } }),
+      db.payment.aggregate({ where: { tenantId: tenant }, _sum: { amount: true } }),
       db.product.findMany({
-        where: { manageStock: true, status: 'ACTIVE' },
+        where: { tenantId: tenant, manageStock: true, status: 'ACTIVE' },
         select: { ref: true, label: true, stockQty: true, minStock: true, unit: true },
       }),
-      db.ticket.count({ where: { status: { in: ['NEW', 'ASSIGNED', 'IN_PROGRESS'] } } }),
-      db.leaveRequest.count({ where: { status: 'PENDING' } }),
-      db.project.count({ where: { status: 'OPEN' } }),
-      db.bankAccount.findMany({ select: { id: true, name: true, currentBalance: true, type: true } }),
+      db.ticket.count({ where: { tenantId: tenant, status: { in: ['NEW', 'ASSIGNED', 'IN_PROGRESS'] } } }),
+      db.leaveRequest.count({ where: { tenantId: tenant, status: 'PENDING' } }),
+      db.project.count({ where: { tenantId: tenant, status: 'OPEN' } }),
+      db.bankAccount.findMany({ where: { tenantId: tenant }, select: { id: true, name: true, currentBalance: true, type: true } }),
       db.agendaEvent.findMany({
-        where: { start: { gte: new Date() } },
+        where: { tenantId: tenant, start: { gte: new Date() } },
         orderBy: { start: 'asc' },
         take: 5,
         select: { id: true, title: true, type: true, start: true, thirdParty: { select: { name: true } } },
       }),
       // payments received (customer invoices only)
       db.payment.findMany({
-        where: { invoiceId: { not: null } },
+        where: { tenantId: tenant, invoiceId: { not: null } },
         select: { amount: true, date: true },
       }),
       db.invoice.findMany({
+        where: { tenantId: tenant },
         orderBy: { date: 'desc' },
         take: 6,
         select: {
@@ -48,6 +55,7 @@ export async function GET() {
         },
       }),
       db.ticket.findMany({
+        where: { tenantId: tenant },
         orderBy: { createdAt: 'desc' },
         take: 5,
         select: {
@@ -60,7 +68,7 @@ export async function GET() {
     // last 6 months revenue vs purchases series
     const now = new Date()
     const series: { month: string; revenue: number; expenses: number }[] = []
-    const purchases = await db.supplierInvoice.findMany({ select: { total: true, date: true } })
+    const purchases = await db.supplierInvoice.findMany({ where: { tenantId: tenant }, select: { total: true, date: true } })
     for (let i = 5; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
       const next = new Date(now.getFullYear(), now.getMonth() - i + 1, 1)
@@ -82,11 +90,13 @@ export async function GET() {
 
     const invoiceStatusCounts = await db.invoice.groupBy({
       by: ['status'],
+      where: { tenantId: tenant },
       _count: { _all: true },
     })
 
     const opportunitiesByStage = await db.opportunity.groupBy({
       by: ['stage'],
+      where: { tenantId: tenant },
       _count: { _all: true },
       _sum: { amount: true },
     })

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 import { computeTotals } from '@/lib/doc-math'
 
@@ -57,10 +58,10 @@ function bad(message: string, status = 400) {
 
 /** Create a doc with a fresh ref, retrying on ref collisions (seed data
  *  pre-allocates refs without hydrating the Sequence table). */
-async function createWithRef<T>(prefix: string, make: (ref: string) => Promise<T>): Promise<T> {
+async function createWithRef<T>(tenantId: string, prefix: string, make: (ref: string) => Promise<T>): Promise<T> {
   let lastErr: unknown
   for (let attempt = 0; attempt < 12; attempt++) {
-    const ref = await nextRef(prefix)
+    const ref = await nextRef(tenantId, prefix)
     try {
       return await make(ref)
     } catch (e) {
@@ -106,9 +107,13 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('proposals.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const proposal = await db.proposal.findUnique({
-      where: { id },
+    const proposal = await db.proposal.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: proposalInclude,
     })
     if (!proposal) return bad('Proposal not found', 404)
@@ -127,11 +132,18 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('proposals.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object') return bad('Invalid request body')
 
-    const proposal = await db.proposal.findUnique({ where: { id }, include: proposalInclude })
+    const proposal = await db.proposal.findFirst({
+      where: { id, tenantId: user.tenantId },
+      include: proposalInclude,
+    })
     if (!proposal) return bad('Proposal not found', 404)
 
     // ----- Action mode -----
@@ -156,10 +168,11 @@ export async function PUT(
           vatRate: l.vatRate,
           sort: i,
         }))
-        const saleOrder = await createWithRef('SO', (ref) =>
+        const saleOrder = await createWithRef(user.tenantId, 'SO', (ref) =>
           db.saleOrder.create({
             data: {
               ref,
+              tenantId: user.tenantId,
               thirdPartyId: tpId,
               status: 'VALIDATED',
               date: new Date(),
@@ -205,7 +218,9 @@ export async function PUT(
     }
     const { thirdPartyId, date, validUntil, notes, lines } = editParsed.data
 
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) return bad('Third party not found')
 
     const totals = computeTotals(lines)
@@ -251,8 +266,12 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('proposals.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const proposal = await db.proposal.findUnique({ where: { id } })
+    const proposal = await db.proposal.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!proposal) return bad('Proposal not found', 404)
     if (proposal.status !== 'DRAFT') return bad('Only draft proposals can be deleted')
     await db.proposal.delete({ where: { id } })

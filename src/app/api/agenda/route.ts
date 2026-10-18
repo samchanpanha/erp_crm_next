@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,6 +12,10 @@ const EVENT_TYPES = ['MEETING', 'CALL', 'TASK', 'REMINDER', 'OTHER'] as const
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('agenda.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(req.url)
     const from = url.searchParams.get('from')?.trim() ?? ''
     const to = url.searchParams.get('to')?.trim() ?? ''
@@ -22,6 +27,7 @@ export async function GET(req: Request) {
 
     const events = await db.agendaEvent.findMany({
       where: {
+        tenantId: user.tenantId,
         ...(Object.keys(startFilter).length ? { start: startFilter } : {}),
         ...(type && (EVENT_TYPES as readonly string[]).includes(type) ? { type } : {}),
       },
@@ -61,6 +67,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('agenda.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -72,7 +82,10 @@ export async function POST(req: Request) {
     const d = parsed.data
 
     if (d.thirdPartyId) {
-      const tp = await db.thirdParty.findUnique({ where: { id: d.thirdPartyId } })
+      const tp = await db.thirdParty.findFirst({
+        where: { id: d.thirdPartyId, tenantId: user.tenantId },
+        select: { id: true },
+      })
       if (!tp) {
         return NextResponse.json({ error: 'Third party not found' }, { status: 404 })
       }
@@ -80,6 +93,7 @@ export async function POST(req: Request) {
 
     const event = await db.agendaEvent.create({
       data: {
+        tenantId: user.tenantId,
         title: d.title,
         description: d.description || null,
         type: d.type,

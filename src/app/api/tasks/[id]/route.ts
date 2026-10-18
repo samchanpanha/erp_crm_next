@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -29,9 +30,13 @@ const projectSelect = { select: { id: true, ref: true, title: true } } as const
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('projects.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const task = await db.task.findUnique({
-      where: { id },
+    const task = await db.task.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: { project: projectSelect },
     })
     if (!task) {
@@ -74,8 +79,15 @@ const updateSchema = z.object({
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('projects.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.task.findUnique({ where: { id }, select: { id: true, status: true } })
+    const existing = await db.task.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true, status: true },
+    })
     if (!existing) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
     }
@@ -134,9 +146,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('projects.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.task.findUnique({
-      where: { id },
+    const existing = await db.task.findFirst({
+      where: { id, tenantId: user.tenantId },
       select: { id: true, ref: true, _count: { select: { timeEntries: true } } },
     })
     if (!existing) {

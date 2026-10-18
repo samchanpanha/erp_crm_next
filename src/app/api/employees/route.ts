@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -89,16 +90,22 @@ const employeeInclude = {
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('employees.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const q = searchParams.get('q')?.trim() ?? ''
     const department = searchParams.get('department')?.trim() ?? ''
     const status = searchParams.get('status') ?? ''
 
     const where: {
+      tenantId?: string
       OR?: Record<string, { contains: string }>[]
       department?: string
       status?: EmpStatus
     } = {}
+    where.tenantId = user.tenantId
 
     if (q) {
       where.OR = [
@@ -131,6 +138,10 @@ export async function GET(req: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('employees.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') return bad('Invalid request body')
 
@@ -138,11 +149,12 @@ export async function POST(req: Request) {
     if (!parsed.success) return bad(firstIssueMessage(parsed.error))
 
     for (let attempt = 0; attempt < 30; attempt++) {
-      const count = await db.employee.count()
+      // employeeCode is unique per tenant — count only this tenant's employees
+      const count = await db.employee.count({ where: { tenantId: user.tenantId } })
       const employeeCode = `EM${String(count + 1).padStart(4, '0')}`
       try {
         const created = await db.employee.create({
-          data: { ...parsed.data, employeeCode },
+          data: { ...parsed.data, employeeCode, tenantId: user.tenantId },
           include: employeeInclude,
         })
         return NextResponse.json({ data: created }, { status: 201 })

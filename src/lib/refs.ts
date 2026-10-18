@@ -3,11 +3,13 @@ import { db } from '@/lib/db'
 /**
  * Generate a Dolibarr-style document reference, e.g. "PR2606-0001".
  * Uses an atomic upsert+increment on the Sequence table.
+ * Counters are per-tenant: the Sequence row key is "<tenantId>:<prefix>".
  */
-export async function nextRef(prefix: string): Promise<string> {
+export async function nextRef(tenantId: string, prefix: string): Promise<string> {
+  const key = `${tenantId}:${prefix}`
   const seq = await db.sequence.upsert({
-    where: { key: prefix },
-    create: { key: prefix, value: 1 },
+    where: { key },
+    create: { key, value: 1 },
     update: { value: { increment: 1 } },
   })
   const now = new Date()

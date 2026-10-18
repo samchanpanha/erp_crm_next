@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { computeTotals } from '@/lib/doc-math'
 
 export const dynamic = 'force-dynamic'
@@ -43,8 +44,15 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('purchaseorders.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const po = await db.purchaseOrder.findUnique({ where: { id }, include: fullInclude })
+    const po = await db.purchaseOrder.findFirst({
+      where: { id, tenantId: user.tenantId },
+      include: fullInclude,
+    })
     if (!po) return NextResponse.json({ error: 'Purchase order not found' }, { status: 404 })
     return NextResponse.json({ data: po })
   } catch (err) {
@@ -65,13 +73,19 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('purchaseorders.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
     const body: unknown = await req.json().catch(() => null)
     if (!body || typeof body !== 'object') {
       return NextResponse.json({ error: 'Invalid payload' }, { status: 400 })
     }
 
-    const existing = await db.purchaseOrder.findUnique({ where: { id } })
+    const existing = await db.purchaseOrder.findFirst({
+      where: { id, tenantId: user.tenantId },
+    })
     if (!existing) return NextResponse.json({ error: 'Purchase order not found' }, { status: 404 })
 
     // ---- Action branch ------------------------------------------------------
@@ -121,14 +135,14 @@ export async function PUT(
       const productIds = [...new Set(lines.map((l) => l.productId).filter((v): v is string => !!v))]
       const managed = productIds.length
         ? await db.product.findMany({
-            where: { id: { in: productIds }, manageStock: true },
+            where: { id: { in: productIds }, tenantId: user.tenantId, manageStock: true },
             select: { id: true },
           })
         : []
       const managedIds = new Set(managed.map((p) => p.id))
       const warehouse =
-        (await db.warehouse.findFirst({ where: { isDefault: true } })) ??
-        (await db.warehouse.findFirst())
+        (await db.warehouse.findFirst({ where: { isDefault: true, tenantId: user.tenantId } })) ??
+        (await db.warehouse.findFirst({ where: { tenantId: user.tenantId } }))
 
       const updated = await db.$transaction(async (tx) => {
         for (const line of lines) {
@@ -137,6 +151,7 @@ export async function PUT(
           if (qty === 0) continue
           await tx.stockMovement.create({
             data: {
+              tenantId: user.tenantId,
               productId: line.productId,
               warehouseId: warehouse?.id ?? null,
               type: 'IN',
@@ -174,7 +189,9 @@ export async function PUT(
       )
     }
     const { thirdPartyId, date, expectedDate, notes, lines } = parsed.data
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) {
       return NextResponse.json({ error: 'Supplier not found' }, { status: 404 })
     }
@@ -227,8 +244,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('purchaseorders.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.purchaseOrder.findUnique({ where: { id } })
+    const existing = await db.purchaseOrder.findFirst({
+      where: { id, tenantId: user.tenantId },
+    })
     if (!existing) return NextResponse.json({ error: 'Purchase order not found' }, { status: 404 })
     if (existing.status !== 'DRAFT') {
       return NextResponse.json(

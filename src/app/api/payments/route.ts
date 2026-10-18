@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { invoiceStatusFromPaid, round2 } from '@/lib/doc-math'
 
 export const dynamic = 'force-dynamic'
@@ -81,12 +82,16 @@ const paymentInclude = {
 // ---------------------------------------------------------------------------
 export async function GET(request: Request) {
   try {
+    const ctx = await requirePerm('payments.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(request.url)
     const q = url.searchParams.get('q')?.trim() ?? ''
     const method = url.searchParams.get('method')?.trim() ?? ''
 
     const payments = await db.payment.findMany({
-      where: { ...(method ? { method } : {}) },
+      where: { tenantId: user.tenantId, ...(method ? { method } : {}) },
       include: paymentInclude,
       orderBy: { date: 'desc' },
     })
@@ -117,6 +122,10 @@ export async function GET(request: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(request: Request) {
   try {
+    const ctx = await requirePerm('payments.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await request.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -130,7 +139,9 @@ export async function POST(request: Request) {
 
     // ----- Customer invoice payment -----
     if (invoiceId) {
-      const invoice = await db.invoice.findUnique({ where: { id: invoiceId } })
+      const invoice = await db.invoice.findFirst({
+        where: { id: invoiceId, tenantId: user.tenantId },
+      })
       if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 400 })
       if (!['UNPAID', 'PARTIAL'].includes(invoice.status)) {
         return NextResponse.json(
@@ -166,10 +177,13 @@ export async function POST(request: Request) {
           include: paymentInclude,
         })
         if (bankAccountId) {
-          const account = await tx.bankAccount.findUnique({ where: { id: bankAccountId } })
+          const account = await tx.bankAccount.findFirst({
+            where: { id: bankAccountId, tenantId: user.tenantId },
+          })
           if (!account) throw new Error('BANK_ACCOUNT_NOT_FOUND')
           await tx.bankTransaction.create({
             data: {
+              tenantId: user.tenantId,
               accountId: bankAccountId,
               date: paidAt,
               label: `Customer payment — ${invoice.ref}`,
@@ -191,7 +205,9 @@ export async function POST(request: Request) {
 
     // ----- Supplier invoice payment -----
     if (supplierInvoiceId) {
-      const supplierInvoice = await db.supplierInvoice.findUnique({ where: { id: supplierInvoiceId } })
+      const supplierInvoice = await db.supplierInvoice.findFirst({
+        where: { id: supplierInvoiceId, tenantId: user.tenantId },
+      })
       if (!supplierInvoice) return NextResponse.json({ error: 'Supplier invoice not found' }, { status: 400 })
       if (!['UNPAID', 'PARTIAL'].includes(supplierInvoice.status)) {
         return NextResponse.json(
@@ -227,10 +243,13 @@ export async function POST(request: Request) {
           include: paymentInclude,
         })
         if (bankAccountId) {
-          const account = await tx.bankAccount.findUnique({ where: { id: bankAccountId } })
+          const account = await tx.bankAccount.findFirst({
+            where: { id: bankAccountId, tenantId: user.tenantId },
+          })
           if (!account) throw new Error('BANK_ACCOUNT_NOT_FOUND')
           await tx.bankTransaction.create({
             data: {
+              tenantId: user.tenantId,
               accountId: bankAccountId,
               date: paidAt,
               label: `Supplier payment — ${supplierInvoice.ref}`,

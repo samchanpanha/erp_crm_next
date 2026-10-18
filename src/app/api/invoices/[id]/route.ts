@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { computeTotals } from '@/lib/doc-math'
 
 export const dynamic = 'force-dynamic'
@@ -81,9 +82,13 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('invoices.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const invoice = await db.invoice.findUnique({
-      where: { id },
+    const invoice = await db.invoice.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: invoiceInclude,
     })
     if (!invoice) return bad('Invoice not found', 404)
@@ -102,11 +107,18 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('invoices.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object') return bad('Invalid request body')
 
-    const invoice = await db.invoice.findUnique({ where: { id }, include: invoiceInclude })
+    const invoice = await db.invoice.findFirst({
+      where: { id, tenantId: user.tenantId },
+      include: invoiceInclude,
+    })
     if (!invoice) return bad('Invoice not found', 404)
 
     // ----- Action mode -----
@@ -135,7 +147,9 @@ export async function PUT(
     }
     const { thirdPartyId, date, dueDate, notes, lines } = editParsed.data
 
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) return bad('Third party not found')
 
     const totals = computeTotals(lines)
@@ -181,8 +195,12 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('invoices.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const invoice = await db.invoice.findUnique({ where: { id } })
+    const invoice = await db.invoice.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!invoice) return bad('Invoice not found', 404)
     if (invoice.status !== 'DRAFT') return bad('Only draft invoices can be deleted')
     await db.invoice.delete({ where: { id } })

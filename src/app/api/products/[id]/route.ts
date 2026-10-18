@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,9 +28,13 @@ const updateSchema = z.object({
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('products.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const product = await db.product.findUnique({
-      where: { id },
+    const product = await db.product.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: { _count: { select: { stockMovements: true } } },
     })
     if (!product) {
@@ -47,8 +52,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // ---------------------------------------------------------------------------
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('products.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.product.findUnique({ where: { id } })
+    const existing = await db.product.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!existing) {
       return NextResponse.json({ error: 'Product not found' }, { status: 404 })
     }
@@ -103,9 +112,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('products.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.product.findUnique({
-      where: { id },
+    const existing = await db.product.findFirst({
+      where: { id, tenantId: user.tenantId },
       select: { id: true, ref: true },
     })
     if (!existing) {

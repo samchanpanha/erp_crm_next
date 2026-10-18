@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -68,14 +69,20 @@ const contactInclude = {
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('thirdparties.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const thirdPartyId = searchParams.get('thirdPartyId')?.trim() ?? ''
     const q = searchParams.get('q')?.trim() ?? ''
 
     const where: {
+      tenantId?: string
       thirdPartyId?: string
       OR?: Record<string, { contains: string }>[]
     } = {}
+    where.tenantId = user.tenantId
 
     if (thirdPartyId) where.thirdPartyId = thirdPartyId
     if (q) {
@@ -107,6 +114,10 @@ export async function GET(req: Request) {
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('thirdparties.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') return bad('Invalid request body')
 
@@ -116,8 +127,8 @@ export async function POST(req: Request) {
     const { thirdPartyId, isPrimary, ...fields } = parsed.data
 
     if (thirdPartyId) {
-      const tp = await db.thirdParty.findUnique({
-        where: { id: thirdPartyId },
+      const tp = await db.thirdParty.findFirst({
+        where: { id: thirdPartyId, tenantId: user.tenantId },
         select: { id: true },
       })
       if (!tp) return bad('Third party not found')
@@ -126,12 +137,12 @@ export async function POST(req: Request) {
     const created = await db.$transaction(async (tx) => {
       if (isPrimary && thirdPartyId) {
         await tx.contact.updateMany({
-          where: { thirdPartyId, isPrimary: true },
+          where: { tenantId: user.tenantId, thirdPartyId, isPrimary: true },
           data: { isPrimary: false },
         })
       }
       return tx.contact.create({
-        data: { ...fields, isPrimary, thirdPartyId: thirdPartyId ?? null },
+        data: { ...fields, isPrimary, thirdPartyId: thirdPartyId ?? null, tenantId: user.tenantId },
         include: contactInclude,
       })
     })

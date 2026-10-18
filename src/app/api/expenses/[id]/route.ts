@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -70,9 +71,13 @@ const detailInclude = {
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('expenses.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const report = await db.expenseReport.findUnique({
-      where: { id },
+    const report = await db.expenseReport.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: detailInclude,
     })
     if (!report) return bad('Not found', 404)
@@ -90,8 +95,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // ---------------------------------------------------------------------------
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('expenses.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.expenseReport.findUnique({ where: { id } })
+    const existing = await db.expenseReport.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!existing) return bad('Not found', 404)
 
     const body = await req.json().catch(() => null)
@@ -131,8 +140,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     const data: Prisma.ExpenseReportUncheckedUpdateInput = {}
     if (fields.employeeId !== undefined) {
-      const employee = await db.employee.findUnique({
-        where: { id: fields.employeeId },
+      const employee = await db.employee.findFirst({
+        where: { id: fields.employeeId, tenantId: user.tenantId },
         select: { id: true },
       })
       if (!employee) return bad('Employee not found', 400)
@@ -160,9 +169,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('expenses.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.expenseReport.findUnique({
-      where: { id },
+    const existing = await db.expenseReport.findFirst({
+      where: { id, tenantId: user.tenantId },
       select: { id: true, status: true },
     })
     if (!existing) return bad('Not found', 404)

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,12 +16,16 @@ const movementInclude = {
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('stock.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(req.url)
     const productId = url.searchParams.get('productId')
     const warehouseId = url.searchParams.get('warehouseId')
     const type = url.searchParams.get('type')
 
-    const where: Prisma.StockMovementWhereInput = {}
+    const where: Prisma.StockMovementWhereInput = { tenantId: user.tenantId }
     if (productId) where.productId = productId
     if (warehouseId) where.warehouseId = warehouseId
     if (type === 'IN' || type === 'OUT' || type === 'ADJUST') where.type = type
@@ -55,6 +60,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('stock.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -72,7 +81,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Quantity must not be zero' }, { status: 400 })
     }
 
-    const product = await db.product.findUnique({ where: { id: d.productId } })
+    const product = await db.product.findFirst({
+      where: { id: d.productId, tenantId: user.tenantId },
+    })
     if (!product) {
       return NextResponse.json({ error: 'Product not found' }, { status: 404 })
     }
@@ -95,6 +106,7 @@ export async function POST(req: Request) {
     const movement = await db.$transaction(async (tx) => {
       const created = await tx.stockMovement.create({
         data: {
+          tenantId: user.tenantId,
           productId: d.productId,
           warehouseId: d.warehouseId || null,
           type: d.type,

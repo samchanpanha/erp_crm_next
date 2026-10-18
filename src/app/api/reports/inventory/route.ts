@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 import { round2 } from '../_shared'
 
@@ -13,8 +14,12 @@ export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
+    const ctx = await requirePerm('reports.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const products = await db.product.findMany({
-      where: { type: 'PRODUCT' },
+      where: { type: 'PRODUCT', tenantId: user.tenantId },
       select: { id: true, ref: true, label: true, stockQty: true, minStock: true, costPrice: true },
     })
 

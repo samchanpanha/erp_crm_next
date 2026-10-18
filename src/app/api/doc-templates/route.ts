@@ -1,46 +1,35 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requireAuth, requirePerm } from '@/lib/auth'
+import { seedDocTemplatesForTenant } from '@/lib/doc-template-seed'
 import {
   TEMPLATE_TYPES,
   templateConfigSchema,
-  type TemplateType,
 } from '@/lib/template-schema'
 
 export const dynamic = 'force-dynamic'
 
-const SEED_NAMES: Record<TemplateType, string> = {
-  INVOICE: 'Classic invoice',
-  RECEIPT: 'Classic receipt',
-  PROPOSAL: 'Classic proposal',
-  ORDER: 'Classic sale order',
-  SUPPLIER_INVOICE: 'Classic supplier invoice',
-}
-
-/** Create one starter template per type on first run. */
-async function ensureSeeded() {
-  const count = await db.docTemplate.count()
-  if (count > 0) return
-  await db.docTemplate.createMany({
-    data: TEMPLATE_TYPES.map((type) => ({
-      name: SEED_NAMES[type],
-      type,
-      isDefault: true,
-      config: JSON.stringify(templateConfigSchema.parse({})),
-    })),
-  })
-}
-
 // ---------------------------------------------------------------------------
-// GET /api/doc-templates?type= — list (seeds starter templates when empty)
+// GET /api/doc-templates?type= — list (seeds the tenant's starter templates
+// on first use). Any signed-in user may read: print dialogs need templates.
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
-    await ensureSeeded()
+    const ctx = await requireAuth()
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
+    await seedDocTemplatesForTenant(db, user.tenantId)
+
     const url = new URL(req.url)
     const type = url.searchParams.get('type')
+    const where = {
+      tenantId: user.tenantId,
+      ...(type && (TEMPLATE_TYPES as readonly string[]).includes(type) ? { type } : {}),
+    }
     const templates = await db.docTemplate.findMany({
-      where: type && (TEMPLATE_TYPES as readonly string[]).includes(type) ? { type } : undefined,
+      where,
       orderBy: [{ type: 'asc' }, { isDefault: 'desc' }, { name: 'asc' }],
     })
     return NextResponse.json({ data: templates })
@@ -51,7 +40,8 @@ export async function GET(req: Request) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/doc-templates — create. If isDefault, unsets others of same type.
+// POST /api/doc-templates — create. If isDefault, unsets others of same type
+// (scoped to the tenant). Requires settings.edit.
 // ---------------------------------------------------------------------------
 const createSchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(120),
@@ -62,6 +52,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('settings.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -77,10 +71,14 @@ export async function POST(req: Request) {
 
     const template = await db.$transaction(async (tx) => {
       if (d.isDefault) {
-        await tx.docTemplate.updateMany({ where: { type: d.type }, data: { isDefault: false } })
+        await tx.docTemplate.updateMany({
+          where: { tenantId: user.tenantId, type: d.type },
+          data: { isDefault: false },
+        })
       }
       return tx.docTemplate.create({
         data: {
+          tenantId: user.tenantId,
           name: d.name,
           type: d.type,
           isDefault: d.isDefault,

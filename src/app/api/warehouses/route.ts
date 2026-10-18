@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -10,10 +11,14 @@ export const dynamic = 'force-dynamic'
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('stock.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(req.url)
     const q = url.searchParams.get('q')?.trim()
 
-    const where: Prisma.WarehouseWhereInput = {}
+    const where: Prisma.WarehouseWhereInput = { tenantId: user.tenantId }
     if (q) {
       where.OR = [{ code: { contains: q } }, { name: { contains: q } }]
     }
@@ -44,6 +49,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('stock.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -56,10 +65,14 @@ export async function POST(req: Request) {
 
     const warehouse = await db.$transaction(async (tx) => {
       if (d.isDefault) {
-        await tx.warehouse.updateMany({ data: { isDefault: false } })
+        await tx.warehouse.updateMany({
+          where: { tenantId: user.tenantId },
+          data: { isDefault: false },
+        })
       }
       return tx.warehouse.create({
         data: {
+          tenantId: user.tenantId,
           code: d.code,
           name: d.name,
           address: d.address || null,

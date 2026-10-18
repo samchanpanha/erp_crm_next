@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 import { BUCKET_ORDER, bucketFor, daysOverdueOf, round2 } from '../_shared'
 
@@ -13,8 +14,12 @@ export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
+    const ctx = await requirePerm('reports.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const invoices = await db.supplierInvoice.findMany({
-      where: { status: { in: ['UNPAID', 'PARTIAL'] } },
+      where: { tenantId: user.tenantId, status: { in: ['UNPAID', 'PARTIAL'] } },
       include: { thirdParty: { select: { id: true, name: true, code: true } } },
     })
     const now = new Date()

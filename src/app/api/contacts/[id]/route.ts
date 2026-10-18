@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -73,8 +74,12 @@ const contactInclude = {
 // ---------------------------------------------------------------------------
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('thirdparties.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.contact.findUnique({ where: { id } })
+    const existing = await db.contact.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!existing) return bad('Not found', 404)
 
     const body = await req.json().catch(() => null)
@@ -89,8 +94,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     // Validate third party link when explicitly provided (string or null)
     if (nextThirdPartyId) {
-      const tp = await db.thirdParty.findUnique({
-        where: { id: nextThirdPartyId },
+      const tp = await db.thirdParty.findFirst({
+        where: { id: nextThirdPartyId, tenantId: user.tenantId },
         select: { id: true },
       })
       if (!tp) return bad('Third party not found')
@@ -102,7 +107,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const updated = await db.$transaction(async (tx) => {
       if (rest.isPrimary === true && finalThirdPartyId) {
         await tx.contact.updateMany({
-          where: { thirdPartyId: finalThirdPartyId, isPrimary: true, id: { not: id } },
+          where: { tenantId: user.tenantId, thirdPartyId: finalThirdPartyId, isPrimary: true, id: { not: id } },
           data: { isPrimary: false },
         })
       }
@@ -127,8 +132,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('thirdparties.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.contact.findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.contact.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!existing) return bad('Not found', 404)
 
     await db.contact.delete({ where: { id } })

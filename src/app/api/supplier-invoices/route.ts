@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 import { round2 } from '@/lib/doc-math'
 
@@ -31,10 +32,13 @@ const siInclude = {
  * schema is frozen) — so we merge PO refs manually to keep the API contract
  * `purchaseOrder: { id, ref } | null` intact.
  */
-async function withPurchaseOrders<T extends { purchaseOrderId: string | null }>(invoices: T[]) {
+async function withPurchaseOrders<T extends { purchaseOrderId: string | null }>(invoices: T[], tenantId: string) {
   const poIds = [...new Set(invoices.map((i) => i.purchaseOrderId).filter((v): v is string => !!v))]
   const pos = poIds.length
-    ? await db.purchaseOrder.findMany({ where: { id: { in: poIds } }, select: { id: true, ref: true } })
+    ? await db.purchaseOrder.findMany({
+        where: { id: { in: poIds }, tenantId },
+        select: { id: true, ref: true },
+      })
     : []
   const poMap = new Map(pos.map((p) => [p.id, p]))
   return invoices.map((i) => ({
@@ -46,11 +50,15 @@ async function withPurchaseOrders<T extends { purchaseOrderId: string | null }>(
 /** GET /api/supplier-invoices?q=&status= */
 export async function GET(req: NextRequest) {
   try {
+    const ctx = await requirePerm('supplierinvoices.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const q = searchParams.get('q')?.trim() ?? ''
     const status = searchParams.get('status')?.trim() ?? ''
 
-    const where: Record<string, unknown> = {}
+    const where: Record<string, unknown> = { tenantId: user.tenantId }
     if (q) {
       where.OR = [
         { ref: { contains: q } },
@@ -69,7 +77,7 @@ export async function GET(req: NextRequest) {
       include: siInclude,
       orderBy: { date: 'desc' },
     })
-    return NextResponse.json({ data: await withPurchaseOrders(invoices) })
+    return NextResponse.json({ data: await withPurchaseOrders(invoices, user.tenantId) })
   } catch (err) {
     console.error('GET /api/supplier-invoices failed', err)
     return NextResponse.json({ error: 'Failed to load supplier invoices' }, { status: 500 })
@@ -79,6 +87,10 @@ export async function GET(req: NextRequest) {
 /** POST /api/supplier-invoices — create DRAFT invoice (totals entered directly, no lines) */
 export async function POST(req: NextRequest) {
   try {
+    const ctx = await requirePerm('supplierinvoices.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -89,12 +101,16 @@ export async function POST(req: NextRequest) {
     }
     const { thirdPartyId, date, dueDate, subtotal, vatTotal, notes, purchaseOrderId } = parsed.data
 
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) {
       return NextResponse.json({ error: 'Supplier not found' }, { status: 404 })
     }
     if (purchaseOrderId) {
-      const po = await db.purchaseOrder.findUnique({ where: { id: purchaseOrderId } })
+      const po = await db.purchaseOrder.findFirst({
+        where: { id: purchaseOrderId, tenantId: user.tenantId },
+      })
       if (!po) return NextResponse.json({ error: 'Purchase order not found' }, { status: 404 })
     }
 
@@ -106,7 +122,8 @@ export async function POST(req: NextRequest) {
       try {
         created = await db.supplierInvoice.create({
           data: {
-            ref: await nextRef('SI'),
+            ref: await nextRef(user.tenantId, 'SI'),
+            tenantId: user.tenantId,
             thirdPartyId,
             status: 'DRAFT',
             date: date ? new Date(date) : new Date(),
@@ -130,7 +147,7 @@ export async function POST(req: NextRequest) {
       )
     }
     return NextResponse.json(
-      { data: (await withPurchaseOrders([created]))[0] },
+      { data: (await withPurchaseOrders([created], user.tenantId))[0] },
       { status: 201 }
     )
   } catch (err) {

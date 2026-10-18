@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { round2 } from '@/lib/doc-math'
 import { z } from 'zod'
 
@@ -10,7 +11,12 @@ export const dynamic = 'force-dynamic'
 // ---------------------------------------------------------------------------
 export async function GET() {
   try {
+    const ctx = await requirePerm('bank.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const accounts = await db.bankAccount.findMany({
+      where: { tenantId: user.tenantId },
       orderBy: [{ createdAt: 'asc' }, { name: 'asc' }],
       include: { _count: { select: { transactions: true } } },
     })
@@ -35,6 +41,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('bank.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -47,6 +57,7 @@ export async function POST(req: Request) {
 
     const account = await db.bankAccount.create({
       data: {
+        tenantId: user.tenantId,
         name: d.name,
         bank: d.bank || null,
         accountNumber: d.accountNumber || null,

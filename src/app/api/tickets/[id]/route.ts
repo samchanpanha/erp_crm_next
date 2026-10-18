@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -76,9 +77,13 @@ const ticketInclude = {
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('tickets.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const ticket = await db.ticket.findUnique({
-      where: { id },
+    const ticket = await db.ticket.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: {
         ...ticketInclude,
         messages: { orderBy: { createdAt: 'asc' } },
@@ -99,8 +104,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // ---------------------------------------------------------------------------
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('tickets.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.ticket.findUnique({ where: { id } })
+    const existing = await db.ticket.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!existing) return bad('Ticket not found', 404)
 
     const body = await req.json().catch(() => null)
@@ -126,8 +135,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
 
     if (thirdPartyId !== undefined && thirdPartyId !== null) {
-      const tp = await db.thirdParty.findUnique({
-        where: { id: thirdPartyId },
+      const tp = await db.thirdParty.findFirst({
+        where: { id: thirdPartyId, tenantId: user.tenantId },
         select: { id: true },
       })
       if (!tp) return bad('Third party not found')
@@ -155,8 +164,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('tickets.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.ticket.findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.ticket.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!existing) return bad('Ticket not found', 404)
 
     await db.ticket.delete({ where: { id } })

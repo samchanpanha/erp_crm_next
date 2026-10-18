@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -32,9 +33,13 @@ const thirdPartySelect = { select: { id: true, name: true, code: true } } as con
 // ---------------------------------------------------------------------------
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('projects.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const project = await db.project.findUnique({
-      where: { id },
+    const project = await db.project.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: { thirdParty: thirdPartySelect, tasks: { orderBy: { createdAt: 'asc' } } },
     })
     if (!project) {
@@ -84,8 +89,15 @@ const updateSchema = z.object({
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('projects.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.project.findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.project.findFirst({
+      where: { id, tenantId: user.tenantId },
+      select: { id: true },
+    })
     if (!existing) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     }
@@ -101,7 +113,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const d = parsed.data
 
     if (d.thirdPartyId) {
-      const tp = await db.thirdParty.findUnique({ where: { id: d.thirdPartyId }, select: { id: true } })
+      const tp = await db.thirdParty.findFirst({
+        where: { id: d.thirdPartyId, tenantId: user.tenantId },
+        select: { id: true },
+      })
       if (!tp) {
         return NextResponse.json({ error: 'Third party not found' }, { status: 400 })
       }
@@ -134,9 +149,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // ---------------------------------------------------------------------------
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('projects.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.project.findUnique({
-      where: { id },
+    const existing = await db.project.findFirst({
+      where: { id, tenantId: user.tenantId },
       select: { id: true, ref: true, _count: { select: { tasks: true } } },
     })
     if (!existing) {

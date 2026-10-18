@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { IMPORT_CONFIG, isImportEntity } from '@/lib/import-config'
 import { buildWorkbookBuffer, buildTemplateBuffer, xlsxResponse } from '@/lib/excel'
 
 export const dynamic = 'force-dynamic'
 
 /**
- * GET /api/export/[entity]            → Excel .xlsx export of all records
+ * GET /api/export/[entity]            → Excel .xlsx export of all tenant records
  * GET /api/export/[entity]?template=1 → styled .xlsx import template (headers + samples)
+ * Permission: data.view (both the template and the data export — an export must
+ * contain ONLY the caller's tenant rows, so every query is tenant-scoped).
  * Entities: 'third-parties' | 'products'.
  * Uses EXACTLY the same headers as the import pipeline so an exported file can
  * be re-imported without changes. Capped at 10 000 rows.
@@ -22,6 +25,10 @@ function dateStamp(): string {
 
 export async function GET(req: Request, { params }: { params: Promise<{ entity: string }> }) {
   try {
+    const ctx = await requirePerm('data.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { entity } = await params
     if (!isImportEntity(entity)) {
       return NextResponse.json({ error: `Unknown export entity "${entity}"` }, { status: 404 })
@@ -37,6 +44,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ entity: 
     let rows: Record<string, unknown>[]
     if (entity === 'third-parties') {
       const all = await db.thirdParty.findMany({
+        where: { tenantId: user.tenantId },
         orderBy: { createdAt: 'desc' },
         take: MAX_EXPORT_ROWS,
       })
@@ -59,6 +67,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ entity: 
       }))
     } else {
       const all = await db.product.findMany({
+        where: { tenantId: user.tenantId },
         orderBy: { createdAt: 'desc' },
         take: MAX_EXPORT_ROWS,
       })

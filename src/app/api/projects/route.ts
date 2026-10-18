@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 
 export const dynamic = 'force-dynamic'
@@ -62,12 +63,16 @@ const taskSummaryInclude = { tasks: { select: { status: true, progress: true } }
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('projects.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const url = new URL(req.url)
     const q = url.searchParams.get('q')?.trim()
     const status = url.searchParams.get('status')
     const thirdPartyId = url.searchParams.get('thirdPartyId')
 
-    const where: Prisma.ProjectWhereInput = {}
+    const where: Prisma.ProjectWhereInput = { tenantId: user.tenantId }
     if (q) {
       where.OR = [
         { ref: { contains: q } },
@@ -116,6 +121,10 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('projects.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -127,7 +136,10 @@ export async function POST(req: Request) {
     const d = parsed.data
 
     if (d.thirdPartyId) {
-      const tp = await db.thirdParty.findUnique({ where: { id: d.thirdPartyId }, select: { id: true } })
+      const tp = await db.thirdParty.findFirst({
+        where: { id: d.thirdPartyId, tenantId: user.tenantId },
+        select: { id: true },
+      })
       if (!tp) {
         return NextResponse.json({ error: 'Third party not found' }, { status: 400 })
       }
@@ -138,8 +150,8 @@ export async function POST(req: Request) {
     let project: Awaited<ReturnType<typeof createProject>> | null = null
     for (let attempt = 0; attempt < 5 && !project; attempt++) {
       try {
-        const ref = await nextRef('PJ')
-        project = await createProject(ref, d)
+        const ref = await nextRef(user.tenantId, 'PJ')
+        project = await createProject(ref, d, user.tenantId)
       } catch (e) {
         if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') continue
         throw e
@@ -159,6 +171,7 @@ export async function POST(req: Request) {
 async function createProject(
   ref: string,
   d: z.infer<typeof createSchema>,
+  tenantId: string,
 ): Promise<
   Prisma.ProjectGetPayload<{
     include: {
@@ -170,6 +183,7 @@ async function createProject(
 > {
   return db.project.create({
     data: {
+      tenantId,
       ref,
       title: d.title,
       description: d.description || null,

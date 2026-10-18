@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -66,9 +67,13 @@ async function recomputeTotal(reportId: string): Promise<number> {
 // ---------------------------------------------------------------------------
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const ctx = await requirePerm('expenses.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const report = await db.expenseReport.findUnique({
-      where: { id },
+    const report = await db.expenseReport.findFirst({
+      where: { id, tenantId: user.tenantId },
       select: { id: true, status: true },
     })
     if (!report) return bad('Not found', 404)

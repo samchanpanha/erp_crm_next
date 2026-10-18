@@ -442,3 +442,146 @@ Work Log:
 Stage Summary:
 - V2.1: all tabular I/O is now Excel-first. /api/export/[entity](?template=1) + /api/export/xlsx produce styled .xlsx; /api/import/[entity] ingests .xlsx/.xls/.csv via multipart (?mode=preview for the wizard) or legacy JSON rows
 - New shared modules: src/lib/excel.ts (server), src/lib/import-config.ts (isomorphic); exceljs externalized from the client bundle
+
+---
+Task ID: 21
+Agent: Main orchestrator (Z.ai Code)
+Task: Multi-tenancy foundation — schema, auth core, permissions catalog, auth APIs, seed
+
+Work Log:
+- prisma/schema.prisma: added Tenant/Role/User/Session models; tenantId (default "t_demo") on all directly-queried models; composite uniques @@unique([tenantId, code|ref|key|name]) replacing global @unique on ThirdParty.code, Product.ref, Proposal/SaleOrder/Invoice/PurchaseOrder/SupplierInvoice/Contract/Project/Task/Ticket/ExpenseReport.ref, Warehouse.code, Employee.employeeCode, Role.name, Setting.key; child line/message models intentionally have NO tenantId (accessed only via tenant-scoped parents)
+- db push required manual step: Setting needed id populated first (prisma db execute ALTER+UPDATE) then push synced + Prisma Client regenerated
+- src/lib/permissions.ts (isomorphic): PERMISSION_MODULES (23 modules × view/edit), perm/hasPerm/canView/canEdit, SYSTEM_ROLE_DEFS (Administrator=*, Manager=all but administration.edit, Sales, Accountant, Viewer)
+- src/lib/password.ts: scrypt hash/verify ("s1:salt:hash"), no next imports (script-safe)
+- src/lib/auth.ts (server): SESSION_COOKIE 'dolinext_session' (httpOnly, sameSite lax, 30d), getSessionUser (session join user+role+tenant, expiry+status checks), buildUserPayload, requireAuth/requirePerm guard pattern (returns AuthContext | NextResponse, use `if (ctx instanceof NextResponse) return ctx`), createSession, set/clearSessionCookie (secure=false — sandbox is http)
+- src/lib/refs.ts: nextRef(tenantId, prefix) — Sequence keys now "<tenantId>:<prefix>"
+- src/lib/doc-template-seed.ts: seedDocTemplatesForTenant(client, tenantId) extracted (relative imports so bun scripts can import)
+- New APIs: POST /api/auth/register (tenant+5 system roles+admin user+starter templates in one tx, auto sign-in), POST /api/auth/login (verify, lastLoginAt, cookie), POST /api/auth/logout, GET /api/auth/me (401 when anon)
+- scripts/seed-auth.ts (bun scripts/seed-auth.ts): t_demo tenant, migrated 12 Sequence keys, 5 system roles, users admin@dolinext.com/sarah@dolinext.com(Sales)/dan@dolinext.com(Accountant) all password demo123, starter templates
+- Dev server restart learned: must spawn detached so parent exits before tool call ends (bun -e spawn detached+unref → re-parents to PID 1); plain `nohup ... &` dies with the tool session
+- Verified via curl: login 200 + user payload, me 200 w/ cookie, bad password 401, me anon 401, register creates new tenant (isolation pending API retrofit by 21-a/21-b); test tenant cleaned up
+
+Stage Summary:
+- Foundation ready for parallel retrofit. Guards: requireAuth() (any signed-in) / requirePerm('<module>.<view|edit>')
+- nextRef signature changed — ALL call sites must pass tenantId (agents 21-a/21-b)
+- Demo credentials: admin@dolinext.com / demo123 (Administrator), sarah@dolinext.com (Sales), dan@dolinext.com (Accountant)
+- Session user payload: {id, tenantId, email, name, status, role{id,name,permissions,isSystem}|null, tenant{id,name}, permissions[]}
+
+---
+Task ID: 21-a
+Agent: documents-finance-agent
+Task: Auth + per-tenant isolation retrofit for documents & finance APIs (invoices, payments, proposals, sale-orders, purchase-orders, supplier-invoices, contracts, bank, reports, dashboard, sequences)
+
+Work Log:
+- src/app/api/invoices/route.ts + [id]/route.ts: requirePerm('invoices.view'/'invoices.edit') on GET/POST/PUT/DELETE; createWithRef helper now takes (tenantId, prefix) → nextRef(user.tenantId,'IN'); tenantId added to list where + create data; [id] fetches via findFirst({where:{id, tenantId}}) (404 'Invoice not found' on miss, blocks cross-tenant); thirdParty lookups tenant-scoped; update/delete still by id after the tenant-checked fetch
+- src/app/api/payments/route.ts (no [id] dir exists): requirePerm('payments.view'/'payments.edit'); list where tenantId; invoice/supplierInvoice/bankAccount lookups → findFirst with tenantId; tx.bankTransaction.create gets tenantId (Balance math unchanged)
+- src/app/api/proposals/route.ts + [id]/route.ts: module 'proposals'; createWithRef(tenantId,'PR'); convert_to_order creates saleOrder with tenantId + nextRef(tenantId,'SO'); thirdParty tenant-scoped; findFirst pattern on [id]
+- src/app/api/sale-orders/route.ts + [id]/route.ts: module 'saleorders'; createWithRef(tenantId,'SO'); convert_to_invoice creates invoice with tenantId + nextRef(tenantId,'IN')
+- src/app/api/purchase-orders/route.ts + [id]/route.ts: module 'purchaseorders'; nextRef(user.tenantId,'PO'); create data tenantId; GET where seeded with tenantId (keeps q/status/thirdPartyId filters); receive action: product.findMany + warehouse.findFirst tenant-scoped, tx.stockMovement.create gets tenantId
+- src/app/api/supplier-invoices/route.ts + [id]/route.ts: module 'supplierinvoices'; withPurchaseOrders/withPurchaseOrder helpers take tenantId so the manual PO-ref merge queries are tenant-scoped (po without matching tenant renders as null); nextRef(user.tenantId,'SI'); create data tenantId
+- src/app/api/contracts/route.ts + [id]/route.ts: module 'contracts'; where init Prisma.ContractWhereInput = { tenantId }; nextRef(user.tenantId,'CT'); create data tenantId; findFirst on [id] for GET/PUT/DELETE
+- src/app/api/bank/route.ts, bank/accounts/route.ts, bank/accounts/[id]/route.ts, bank/transactions/route.ts: module 'bank' (view on GET, edit on POST/PUT/DELETE); account + transaction lists tenant-scoped; account create data tenantId; balance-recompute aggregate scoped (accountId + tenantId); transaction create data tenantId
+- src/app/api/reports/{sales,receivables,payables,top,tax,inventory}/route.ts: all GET guarded with requirePerm('reports.view'); tenantId added to every inner where (invoices, payments, supplierInvoices, products, top-products invoiceFilter incl. the invoiceLine relation filter used by tax/top). _shared.ts has no db code — untouched
+- src/app/api/dashboard/route.ts: requireAuth() only (any signed-in user); all 17 queries tenant-scoped (counts, aggregates, findMany, both groupBy)
+- src/app/api/sequences/route.ts: requireAuth(); where key startsWith "<tenantId>:"; returned key stripped of the "<tenantId>:" prefix (bare 'CU','IN',...) so Settings UI is unchanged; values untouched
+- All response envelopes ({data}/{error}), status codes, zod schemas, export const dynamic = 'force-dynamic' preserved verbatim; nested line creates untouched (child line models deliberately have no tenantId)
+
+Stage Summary:
+- 22 route files across 11 module dirs retrofitted; permission map: invoices/payments/proposals/saleorders/purchaseorders/supplierinvoices/contracts/bank → .view on GET + .edit on POST/PUT/PATCH/DELETE; reports/* → reports.view (read-only); dashboard + sequences → requireAuth() (no permission)
+- Verification: bunx eslint on all 11 dirs → clean (exit 0); bunx tsc --noEmit filtered to my files → 0 errors (remaining tsc errors are other agents' files: auth/register, import/[entity], settings, erp-app users module, examples/, skills/)
+- curl (admin@dolinext.com, t_demo): login 200; GET /api/invoices w/ cookie 200 → 6 rows (DB truly has 6 t_demo invoices; the 8-row hint was stale, test rows were cleaned in earlier tasks); anon → 401 {"error":"Authentication required. Please sign in."}; GET /api/sequences 200 → 12 bare keys (CT,CU,ER,IN,PD,PJ,PO,PR,SI,SO,TK,TS — no t_demo: prefix); GET /api/reports/receivables 200 → 2 rows, buckets CURRENT:2; all 15 other GET endpoints spot-checked → 200 with cookie, 401 anon (dashboard, bank, bank/accounts, bank/transactions, payments, proposals, sale-orders, purchase-orders, supplier-invoices, contracts, reports/sales|payables|top|tax|inventory); [id] detail spot-checks 200; random id → 404
+- Write-path smoke test: POST /api/invoices 201 → ref IN2610-0016 via nextRef('t_demo','IN'), tenantId persisted; DELETE draft 200; record set restored exactly (6 rows); IN sequence advanced 15→16 (refs monotonic by design, same precedent as Task 17)
+- Dev-server note: first ~90s of polling hit 500 pages caused by a transient Turbopack compile error in erp-app.tsx (missing ./modules/users from a parallel agent) — unrelated to this retrofit, self-resolved once that agent's file landed
+
+---
+Task ID: 21-c
+Agent: frontend-auth-agent
+Task: Frontend auth shell — zustand session store, full-screen AuthScreen, ErpRoot gate + permission-gated nav/quick-create/account menu
+
+Work Log:
+- Created src/lib/auth-store.ts: zustand store with SessionUser typed exactly per backend payload; init() GET /api/auth/me → authed|anon (network/parse errors → anon), login/register parse {data}/{error} envelope and set authed+user, logout() POSTs then drops to anon even on failure, forceSignOut() immediate anon; all fetches credentials:'same-origin'
+- Created src/components/erp/auth-screen.tsx: min-h-screen split layout — left brand panel (hidden <lg, bg-primary + CSS-only radial-dot pattern + blurred orbs, DN logo mark, tagline, 3 lucide feature rows, bordered Demo account card admin@dolinext.com/demo123 with Fill button), right max-w-md card with Tabs "Sign in"/"New organization", inline destructive Alerts, mobile (lg:hidden) demo hint with Fill, register form has org/name/email/password (min-8 hint); framer-motion 250-300ms fade/slide; semantic main/labels/aria, h-11 controls; footer line "DoliNext — an open rebuild of the Dolibarr feature set"
+- Reworked src/components/erp/erp-app.tsx: old default is now internal ErpApp({ user: SessionUser }); new default ErpRoot does init() on mount, Splash while loading, AuthScreen when anon, <ErpApp key={user.id} user={user}/> when authed (fresh QueryClient per user); session watchdog (immediate + 60s interval + focus/visibilitychange) silently GETs /api/auth/me and on 401 forceSignOut() + hash reset to #/dashboard
+- Nav gating: NAV_PERMISSIONS map (dashboard has no entry = always visible); filterNav() drops items/groups the user cannot view; the SAME filtered nav drives sidebar, mobile sheet and TopBar search; useHashRoute validates hash against allowed keys → hidden/unknown modules fall back to dashboard
+- Added Configuration → "Users & Roles" (ShieldCheck, gated administration.view) + MODULE_VIEWS users dynamic import; Quick create gated per module .edit (menu hidden when empty); Account menu rebuilt from user payload: initials avatar, name+email, "Role · Tenant" line, gated My agenda/My HR space/Settings/Users & Roles items, Sign out with LogOut + inline spinner; footer appends · tenant name
+- Verified: bunx eslint on the 3 files → 0 issues; tsc --noEmit → only expected TS2307 './modules/users' in erp-app.tsx until the parallel agent landed src/components/erp/modules/users.tsx (appeared ~200s later; re-compile then clean for my files); pre-existing errors in api/settings + api/tickets routes belong to other agents
+- Browser (agent-browser, isolated session): / → AuthScreen (NOT the ERP), screenshot /tmp/auth-login.png; demo Fill autofilled fields; admin@dolinext.com/demo123 → full 23-item nav incl. Users & Roles, Quick create shows all 8 items, account menu "Demo Admin / admin@dolinext.com / Administrator · Demo Organization" with My agenda|My HR space|Settings|Users & Roles|Sign out, screenshot /tmp/erp-admin.png; Sign out → AuthScreen, session cookie cleared; sarah@dolinext.com/demo123 → nav exactly Dashboard, Reports, Third Parties, Opportunities, Proposals, Sale Orders, Contracts, Invoices, Payments, Products & Services, Knowledge Base (groups Purchasing/Projects/HR/Productivity/Configuration dropped); #/bank while signed in as Sarah renders dashboard fallback; Quick create only Third party/Commercial proposal/Sale order; account menu "Sarah Cooper / sarah@dolinext.com / Sales · Demo Organization" with only Sign out; screenshot /tmp/erp-sarah.png; Sign out → AuthScreen. No records created.
+- dev.log tail: login/logout 200, correct 403s from API guards (settings/employees for Sales), no client exceptions or compile errors from my changes (earlier "Module not found users" resolved once the parallel agent's file landed)
+
+Stage Summary:
+- Files: src/lib/auth-store.ts (new), src/components/erp/auth-screen.tsx (new), src/components/erp/erp-app.tsx (reworked; default export ErpRoot, page.tsx untouched)
+- Store contract: useAuthStore { status:'loading'|'anon'|'authed', user:SessionUser|null, init(), login(email,pw)→{ok,error?}, register({organization,name,email,password})→{ok,error?}, logout(), forceSignOut() }; SessionUser exported for reuse
+- Nav gating: NAV_PERMISSIONS maps nav-key→permission module; canView gates nav/search/hash fallback, canEdit gates Quick create; dashboard always visible; empty groups dropped; users module keyed 'users' ↔ 'administration.view'/'administration' permission
+- ErpApp is remounted per user (key={user.id}) so TanStack Query cache never crosses tenants; watchdog only churns the store on 401
+
+---
+Task ID: 21-b
+Agent: crm-ops-agent
+Task: Retrofit auth guards + per-tenant isolation across CRM/ops/settings/import-export APIs (third-parties, contacts, opportunities, products, warehouses, stock, projects, tasks, employees, leave, expenses, tickets, knowledge, agenda, settings, doc-templates, import, export)
+
+Work Log:
+- Applied the standard guard pattern (`const ctx = await requirePerm('<module>.view'|'<module>.edit')` / `ctx instanceof NextResponse → return`) to every handler in scope; `tenantId: user.tenantId` added to every where/create/upsert; [id] routes now `findFirst({ where: { id, tenantId } })` → 404 with the exact previous error strings (responses byte-compatible)
+- third-parties + contacts + opportunities (module 'thirdparties'/'opportunities'): guards, tenant-scoped where (incl. OR search), third-party link validation tenant-scoped (`findFirst({ id, tenantId })`), create includes tenantId; contact isPrimary demotion updateMany scoped by tenant+thirdParty; auto code via `nextRef(user.tenantId, REF_PREFIX.thirdParty)`
+- products + warehouses + stock (module 'products'/'stock'): `nextRef(user.tenantId, 'PD')`, initial-stock IN movement + default-warehouse lookup tenant-scoped, StockMovement/Warehouse creates carry tenantId; warehouse isDefault sweeps scoped `{ tenantId }` (+ `id: { not: id }`); stock POST validates product within tenant before quantity math
+- projects + tasks (module 'projects'): `nextRef(tenantId, 'PJ'|'TS')`, createProject/createTask take tenantId, project↔task cross-links validated tenant-scoped; time logging route validates task + employee within tenant (TimeEntry itself stays child w/o tenantId)
+- employees (module 'employees'): EM#### code generation now counts only `where: { tenantId }` (code unique per tenant); create includes tenantId
+- leave + expenses (module 'leave'/'expenses'): employee validation tenant-scoped; `nextRef(tenantId, REF_PREFIX.expenseReport)`; ExpenseLine child routes gate on tenant-scoped parent report
+- tickets (module 'tickets'): `nextRef(tenantId, 'TK')`, tenant-scoped TP checks, list/detail/detail-messages guards (TicketMessage child untouched); knowledge + agenda: guards + tenantId on create (agenda TP check tenant-scoped)
+- settings route: GET → `requireAuth()` + `db.setting.findMany({ where: { tenantId } })` merged over SETTING_DEFAULTS; PUT → `requirePerm('settings.edit')` + per-key upsert `where: { tenantId_key: { tenantId, key } }`, create `{ tenantId, key, value }`, update `{ value }` (new cuid PK + compound unique honored)
+- doc-templates: deleted local SEED_NAMES/ensureSeeded; GET → `requireAuth()` + `seedDocTemplatesForTenant(db, user.tenantId)` + tenant-scoped findMany (type filter preserved); GET [id] requireAuth; POST/PUT/DELETE requirePerm('settings.edit'); create includes tenantId; "unset other defaults" updateMany scoped `{ tenantId, type }` (+ id-not-self); [id] findFirst tenant-scoped → 404
+- import/[entity]: `requirePerm('data.edit')` at top of POST (covers multipart file path, ?mode=preview path, legacy JSON path); processThirdPartyRow/processProductRow/createProduct thread tenantId; code/ref existence checks → `findFirst({ code|ref, tenantId })` (old `findUnique({ code })`/`({ ref })` no longer valid under compound uniques); updates by id; auto codes `nextRef(tenantId, REF_PREFIX.thirdParty|product)`; initial-stock movement tenantId; race-retry path re-fetches within tenant
+- export/[entity]: `requirePerm('data.view')` (template + data); both findMany queries scoped `{ where: { tenantId } }` so exports contain only the caller's rows
+- Verification: eslint exit 0 over all 18 in-scope dirs; `tsc --noEmit | rg (in-scope)` → zero matches (remaining repo errors are pre-existing/parallel-scope: auth/register, users.tsx, skills/, examples/); curl E2E below
+
+Stage Summary:
+- 30 route files across 18 API dirs now require a session and enforce per-tenant isolation; permission map: third-parties+contacts→thirdparties.view/edit, opportunities→opportunities.*, products→products.*, warehouses+stock→stock.*, projects+tasks+time→projects.*, employees→employees.*, leave→leave.*, expenses(+lines)→expenses.*, tickets(+messages)→tickets.*, knowledge→knowledge.*, agenda→agenda.*, settings GET=requireAuth/PUT=settings.edit, doc-templates GET=requireAuth(/id too)/mutations=settings.edit, import=data.edit, export=data.view
+- curl verified on 127.0.0.1:3000: login 200; anon third-parties/settings/doc-templates/import/export → 401; authed third-parties → 200, 8 rows, tenantIds = ["t_demo"]; settings GET → company.name "DoliNext Demo Ltd" (16 keys); doc-templates GET → 5 templates, all t_demo (INVOICE, ORDER, PROPOSAL, RECEIPT, SUPPLIER_INVOICE); export/third-parties → 200 valid xlsx 8166 bytes; POST third-party → 201 (id cmvdnraui000lmbi9cji4xed6, code CU2610-0013, tenantId t_demo) then DELETE → 200, row count restored to 8; doc-template [id] 200 / bogus id 404; RBAC spot-checks: sarah (Sales) settings PUT → 403, employees GET → 403, settings GET → 200 (requireAuth exception works)
+- All list/detail/mutation response shapes unchanged ({data}/{error}, 201 on create, 404/400 semantics preserved) — frontend untouched
+
+---
+Task ID: 21-d
+Agent: users-roles-agent
+Task: Users & Roles APIs (/api/users, /api/roles) + admin "Users & Roles" module UI
+
+Work Log:
+- src/app/api/users/route.ts: GET requirePerm('administration.view') → tenant users orderBy createdAt asc, include role, serializeUser payload {id,name,email,status,roleId,role{id,name,isSystem}|null,lastLoginAt,createdAt} (never passwordHash); POST requirePerm('administration.edit') zod {name 2..120, email trimmed lowercase ≤200, password 8..200, roleId} → role tenant check ('Selected role not found'), P2002 → 409 'An account with this email already exists', 201 {data}
+- src/app/api/users/[id]/route.ts (params: Promise<{id}>): tenant-scoped findFirst include role → 404 'User not found'; PUT (zod partial name/password/roleId/status) with self-guard (self + roleId/status → 400 'You cannot change your own role or status'), last-admin guard (ACTIVE Administrator target losing admin via status→DISABLED or role change while 0 OTHER active Administrators → 400 'This is the last administrator account'), roleId tenant re-check, password→hashPassword; DELETE with self-guard ('You cannot delete your own account'), last-admin guard, session.deleteMany + user.delete → {data:{ok:true}}
+- src/app/api/roles/route.ts: GET (administration.view) tenant roles orderBy isSystem desc, name asc, _count.users, permissions JSON-parsed → userCount; POST (administration.edit) zod {name 2..60, description?≤300, permissions: array regex ^\*$|^[a-z]+\.(view|edit)$ max 100} → P2002 400 'A role with this name already exists', 201
+- src/app/api/roles/[id]/route.ts: PUT — Administrator system role fully locked (400 'The Administrator role cannot be modified'); other system roles permissions-only (name/description present-and-different → 400 'System role names/descriptions cannot be changed'); custom roles fully editable; P2002 → 400 duplicate name. DELETE — isSystem → 400 'System roles cannot be deleted'; _count.users>0 → 400 'Reassign its users before deleting this role'; else delete
+- src/components/erp/modules/users.tsx ('use client'): shadcn Tabs (Users | Roles), local api() envelope helper, useQuery ['users']/['roles'], gating via useAuthStore((s)=>s.user) + canEdit(user.permissions,'administration') (view-only lists render without write controls). Users tab: Card + count Badge + gated "Add user" (UserPlus), Avatar-initials table (You badge on self), role outline Badge, emerald Active / muted Disabled badges, date-fns last sign-in, row DropdownMenu (Edit / Reset password dialog / Disable-Enable toggle / destructive Delete w/ AlertDialog), 44px mobile targets, max-h-[480px] scroll area w/ styled scrollbar. Role editor dialog: name+description (locked+disabled for system roles), PERMISSION_MODULES matrix grouped by .group with View/Edit Checkbox pairs in Set<string> state (Edit auto-checks View, uncheck View clears Edit, Edit disabled w/o View; '*' seeds all + disables matrix w/ "Administrator has unrestricted access"), All view/All edit/Clear quick actions; save invalidates ['roles'] AND ['users']. Skeletons, destructive Alert + Retry, EmptyStates, DialogTitle/Description on every dialog, sonner toast.success on mutations, inline destructive server errors in dialogs
+- eslint: `bunx eslint src/app/api/users src/app/api/roles src/components/erp/modules/users.tsx` → 0 issues (fixed react-hooks/set-state-in-effect by switching dialogs to keyed conditional mount with useState initializers instead of effect-seeded state)
+- tsc: `bunx tsc --noEmit | rg '(api/users|api/roles|modules/users)'` → no errors in scoped files (remaining project errors are pre-existing in examples/, skills/, api/auth/register — outside scope)
+- Curl verification (admin@dolinext.com/demo123, cookie /tmp/cj21d.txt): login 200; GET /api/roles 200 (5 system roles w/ permission arrays + userCount); GET /api/users 200 (3 users, ordered asc, no passwordHash); POST /api/roles Ops → 201; POST /api/users Eve@Test w/ Ops role → 201; PUT eve {status:DISABLED} → 200 then eve login → 403 (re-enabled 200); PUT Administrator permissions → 400; PUT Manager same-perms → 200, rename → 400; DELETE Administrator role → 400 'System roles cannot be deleted'; DELETE Ops (1 user) → 400 'Reassign its users before deleting this role'; dup role name → 400, dup email → 409, bad roleId → 400 'Selected role not found', bad perm string → 400; eve (no perms) GET /api/users → 403; last-admin guard verified with a non-admin actor holding administration.edit: PUT/DELETE sole active Administrator → 400 'This is the last administrator account'; self-guard PUT own {status:DISABLED} → 400 'You cannot change your own role or status'; DELETE eve → 200 (her session invalidated: me → 401) + DELETE Ops → 200; final state restored: 3 users, 5 system roles
+
+Stage Summary:
+- API contracts: GET/POST /api/users, PUT/DELETE /api/users/[id]; GET/POST /api/roles, PUT/DELETE /api/roles/[id] — all tenant-scoped behind requirePerm('administration.view'|'administration.edit'), {data}/{error} envelope, passwordHash never serialized
+- Guards: self (own role/status/delete blocked), last-admin (an ACTIVE Administrator can't lose admin status / be deleted while no OTHER active Administrator exists), system roles (Administrator immutable, other system roles permissions-only, undeletable), custom role deletion blocked while users assigned; user delete purges sessions
+- UI: single 'users' module key — Users & Roles tabbed admin module with gated write controls (canEdit(permissions,'administration')), user CRUD + password reset + status toggles, role CRUD + permission matrix editor
+- Test artifacts cleaned: temp users/roles deleted; demo tenant back to 3 users / 5 system roles
+
+---
+Task ID: 21 (integration & release)
+Agent: Main orchestrator (Z.ai Code)
+Task: Integrate, verify and release multi-tenant registration, user & role management
+
+Work Log:
+- Dispatched 4 parallel agents (21-a documents/finance retrofit, 21-b CRM/ops/settings retrofit, 21-c frontend auth shell, 21-d users & roles module); all reported success with curl verification
+- Fixed TS error in api/auth/register (roles: Role[] typing); fixed Rules-of-Hooks violation in dashboard.tsx (useAuthStore moved above early return); replaced hardcoded "Welcome back, Alice" with the signed-in user's first name
+- Fixed React "uncontrolled→controlled" Select warning in users.tsx role combobox (sentinel '__none__' value)
+- E2E (agent-browser session t21): auth screen renders (tabs + demo-fill); admin demo login → full 23-item nav incl. Users & Roles; Users tab lists 4 seeded users w/ role/status/last-sign-in; Add user dialog → created Pat Miller (Viewer) via UI → appears in list; Roles tab shows 5 system roles; Viewer role editor renders grouped permission matrix (all view checked, edits unchecked, name/description locked); toggled products.edit on Viewer → saved → API confirmed → reverted → API confirmed; account menu shows real identity (name/email/role/tenant) and Sign out returns to AuthScreen
+- Role-gated UX re-check: Sales user nav hides Bank/Supplier/Stock/Projects/HR/Settings/Users&Roles; Viewer (pat@demo.local) sees all nav but Add user disabled (read-only)
+- Multi-tenant registration E2E: registered "Sunrise Bakery" via UI → auto sign-in as tenant admin; tenant isolation confirmed (0 third-parties vs 8 in demo; own 5 seeded doc templates; Users list shows only self); test tenant removed after verification
+- Guards re-verified by curl: anon → 401 on all business APIs; Sales settings PUT → 403; disabled user login → 403
+- Console clean after fixes; zero page errors; dev.log free of 5xx; mobile 390px auth screen no h-overflow; lint + tsc --noEmit clean (excluding examples/skills)
+- Cleanup: removed Sunrise Bakery tenant; kept Pat Miller (pat@demo.local / testpass123, Viewer) as a demo fixture
+
+Stage Summary:
+- V3 RELEASED: multi-tenant SaaS-style auth on DoliNext —
+  * Registration creates Tenant + 5 system roles + Administrator user + starter doc templates in one transaction, auto sign-in
+  * Session auth: httpOnly cookie, Session table, 30d TTL, scrypt password hashing (node:crypto, zero deps)
+  * RBAC: 23 modules × view/edit permission strings ("*" admin), enforced in all 60+ API routes (401 anon / 403 no-perm / 404 cross-tenant)
+  * Data isolation: tenantId on every root model, composite per-tenant uniques for refs/codes/setting keys/role names, per-tenant sequence counters, per-tenant settings & doc templates
+  * Users & Roles admin module: user CRUD w/ self/last-admin guards, role editor w/ grouped permission matrix, system-role protection
+  * Frontend: auth-gated shell (ErpRoot), permission-filtered nav/search/quick-create/account menu, per-user QueryClient, 60s session watchdog
+- Demo credentials: admin@dolinext.com / demo123 (Administrator) · sarah@dolinext.com (Sales) · dan@dolinext.com (Accountant) · pat@demo.local / testpass123 (Viewer)
+- Dev-server ops note: background processes must re-parent to PID 1 before the tool call ends (bun -e spawn detached+unref pattern); plain nohup& dies with the session

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef, REF_PREFIX } from '@/lib/refs'
 
 export const dynamic = 'force-dynamic'
@@ -62,12 +63,16 @@ const employeeMini = { select: { id: true, firstName: true, lastName: true, empl
 // ---------------------------------------------------------------------------
 export async function GET(req: Request) {
   try {
+    const ctx = await requirePerm('expenses.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const q = searchParams.get('q')?.trim() ?? ''
     const status = searchParams.get('status') ?? ''
     const employeeId = searchParams.get('employeeId')?.trim() ?? ''
 
-    const where: Prisma.ExpenseReportWhereInput = {}
+    const where: Prisma.ExpenseReportWhereInput = { tenantId: user.tenantId }
 
     if (q) {
       where.OR = [
@@ -98,18 +103,22 @@ export async function GET(req: Request) {
 
 // ---------------------------------------------------------------------------
 // POST /api/expenses  →  201 { data: ExpenseReport }
-// Always created as DRAFT; ref = nextRef('ER') with P2002 retry.
+// Always created as DRAFT; ref = nextRef(tenantId, 'ER') with P2002 retry.
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
+    const ctx = await requirePerm('expenses.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     if (body === null || typeof body !== 'object') return bad('Invalid request body')
 
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) return bad(firstIssueMessage(parsed.error))
 
-    const employee = await db.employee.findUnique({
-      where: { id: parsed.data.employeeId },
+    const employee = await db.employee.findFirst({
+      where: { id: parsed.data.employeeId, tenantId: user.tenantId },
       select: { id: true },
     })
     if (!employee) return bad('Employee not found', 400)
@@ -117,10 +126,11 @@ export async function POST(req: Request) {
     const include = { employee: employeeMini, _count: { select: { lines: true } } } as const
 
     for (let attempt = 0; attempt < 30; attempt++) {
-      const ref = await nextRef(REF_PREFIX.expenseReport)
+      const ref = await nextRef(user.tenantId, REF_PREFIX.expenseReport)
       try {
         const created = await db.expenseReport.create({
           data: {
+            tenantId: user.tenantId,
             ref,
             employeeId: parsed.data.employeeId,
             status: 'DRAFT',

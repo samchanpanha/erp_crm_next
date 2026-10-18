@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef, REF_PREFIX } from '@/lib/refs'
 import { IMPORT_CONFIG, isImportEntity } from '@/lib/import-config'
 import { parseSpreadsheetFile } from '@/lib/excel'
@@ -10,7 +11,10 @@ export const dynamic = 'force-dynamic'
 /**
  * POST /api/import/[entity]
  * Server-validated bulk import for 'third-parties' | 'products'.
- * Two transports:
+ * Permission: data.edit (applies to the multipart path, the ?mode=preview path
+ * and the legacy JSON path). Every row is processed inside the caller's tenant:
+ * uniqueness checks are per-tenant and auto-codes come from the tenant's own
+ * Sequence counters. Two transports:
  *  1) JSON body: { rows: Record<string,string>[], dryRun?: boolean }
  *  2) multipart/form-data: file=<.xlsx|.xls|.csv upload>, dryRun='true'|'false'
  *     - ?mode=preview  → { headers, rowCount, rows(first 5), missingRequired, kind }
@@ -138,7 +142,11 @@ interface ThirdPartyData {
   notes: string | null
 }
 
-async function processThirdPartyRow(row: Record<string, string>, dryRun: boolean): Promise<'created' | 'updated'> {
+async function processThirdPartyRow(
+  row: Record<string, string>,
+  dryRun: boolean,
+  tenantId: string,
+): Promise<'created' | 'updated'> {
   const name = (row.name ?? '').trim()
   if (!name) throw new ImportError('Name is required')
   if (name.length > 200) throw new ImportError('Name is too long (max 200 characters)')
@@ -188,18 +196,21 @@ async function processThirdPartyRow(row: Record<string, string>, dryRun: boolean
 
   const code = (row.code ?? '').trim()
   if (code) {
-    const existing = await db.thirdParty.findUnique({ where: { code }, select: { id: true } })
+    // codes are unique per tenant (@@unique([tenantId, code]))
+    const existing = await db.thirdParty.findFirst({ where: { code, tenantId }, select: { id: true } })
     if (existing) {
-      if (!dryRun) await db.thirdParty.update({ where: { code }, data })
+      if (!dryRun) await db.thirdParty.update({ where: { id: existing.id }, data })
       return 'updated'
     }
     try {
-      if (!dryRun) await db.thirdParty.create({ data: { ...data, code } })
+      if (!dryRun) await db.thirdParty.create({ data: { ...data, code, tenantId } })
       return 'created'
     } catch (e) {
-      // Rare race: the code was created between findUnique and create -> update instead
+      // Rare race: the code was created between findFirst and create -> update instead
       if (!isUniqueViolation(e)) throw e
-      if (!dryRun) await db.thirdParty.update({ where: { code }, data })
+      const raced = await db.thirdParty.findFirst({ where: { code, tenantId }, select: { id: true } })
+      if (!raced) throw e
+      if (!dryRun) await db.thirdParty.update({ where: { id: raced.id }, data })
       return 'updated'
     }
   }
@@ -207,9 +218,9 @@ async function processThirdPartyRow(row: Record<string, string>, dryRun: boolean
   // No code provided -> auto-generate with the same helper as POST /api/third-parties
   if (dryRun) return 'created'
   for (let attempt = 0; attempt < 30; attempt++) {
-    const generated = await nextRef(REF_PREFIX.thirdParty)
+    const generated = await nextRef(tenantId, REF_PREFIX.thirdParty)
     try {
-      await db.thirdParty.create({ data: { ...data, code: generated } })
+      await db.thirdParty.create({ data: { ...data, code: generated, tenantId } })
       return 'created'
     } catch (e) {
       if (!isUniqueViolation(e)) throw e
@@ -247,7 +258,11 @@ function productUpdateData(data: ProductData): Record<string, unknown> {
   return updateData
 }
 
-async function processProductRow(row: Record<string, string>, dryRun: boolean): Promise<'created' | 'updated'> {
+async function processProductRow(
+  row: Record<string, string>,
+  dryRun: boolean,
+  tenantId: string,
+): Promise<'created' | 'updated'> {
   const label = (row.label ?? '').trim()
   if (!label) throw new ImportError('Label is required')
   if (label.length > 200) throw new ImportError('Label is too long (max 200 characters)')
@@ -302,18 +317,21 @@ async function processProductRow(row: Record<string, string>, dryRun: boolean): 
 
   const ref = (row.ref ?? '').trim()
   if (ref) {
-    const existing = await db.product.findUnique({ where: { ref }, select: { id: true } })
+    // refs are unique per tenant (@@unique([tenantId, ref]))
+    const existing = await db.product.findFirst({ where: { ref, tenantId }, select: { id: true } })
     if (existing) {
-      if (!dryRun) await db.product.update({ where: { ref }, data: productUpdateData(data) })
+      if (!dryRun) await db.product.update({ where: { id: existing.id }, data: productUpdateData(data) })
       return 'updated'
     }
     try {
-      if (!dryRun) await createProduct({ ...data, ref })
+      if (!dryRun) await createProduct({ ...data, ref, tenantId })
       return 'created'
     } catch (e) {
-      // Rare race: the ref was created between findUnique and create -> update instead
+      // Rare race: the ref was created between findFirst and create -> update instead
       if (!isUniqueViolation(e)) throw e
-      if (!dryRun) await db.product.update({ where: { ref }, data: productUpdateData(data) })
+      const raced = await db.product.findFirst({ where: { ref, tenantId }, select: { id: true } })
+      if (!raced) throw e
+      if (!dryRun) await db.product.update({ where: { id: raced.id }, data: productUpdateData(data) })
       return 'updated'
     }
   }
@@ -321,9 +339,9 @@ async function processProductRow(row: Record<string, string>, dryRun: boolean): 
   // No ref provided -> auto-generate with the same helper as POST /api/products
   if (dryRun) return 'created'
   for (let attempt = 0; attempt < 30; attempt++) {
-    const generated = await nextRef(REF_PREFIX.product)
+    const generated = await nextRef(tenantId, REF_PREFIX.product)
     try {
-      await createProduct({ ...data, ref: generated })
+      await createProduct({ ...data, ref: generated, tenantId })
       return 'created'
     } catch (e) {
       if (!isUniqueViolation(e)) throw e
@@ -333,12 +351,15 @@ async function processProductRow(row: Record<string, string>, dryRun: boolean): 
 }
 
 /** Create a product + trace the initial stock as an IN movement (like POST /api/products) */
-async function createProduct(data: ProductData & { ref: string }) {
+async function createProduct(data: ProductData & { ref: string; tenantId: string }) {
   const created = await db.product.create({ data })
   if (data.manageStock && data.stockQty > 0) {
-    const defaultWarehouse = await db.warehouse.findFirst({ where: { isDefault: true } })
+    const defaultWarehouse = await db.warehouse.findFirst({
+      where: { isDefault: true, tenantId: data.tenantId },
+    })
     await db.stockMovement.create({
       data: {
+        tenantId: data.tenantId,
         productId: created.id,
         warehouseId: defaultWarehouse?.id ?? null,
         type: 'IN',
@@ -361,8 +382,16 @@ interface ImportResult {
   errors: { row: number; message: string }[]
 }
 
-async function runImport(entity: Entity, rows: Record<string, string>[], dryRun: boolean): Promise<ImportResult> {
-  const processRow = entity === 'third-parties' ? processThirdPartyRow : processProductRow
+async function runImport(
+  entity: Entity,
+  rows: Record<string, string>[],
+  dryRun: boolean,
+  tenantId: string,
+): Promise<ImportResult> {
+  const processRow =
+    entity === 'third-parties'
+      ? (row: Record<string, string>) => processThirdPartyRow(row, dryRun, tenantId)
+      : (row: Record<string, string>) => processProductRow(row, dryRun, tenantId)
   let imported = 0
   let updated = 0
   const allErrors: { row: number; message: string }[] = []
@@ -370,7 +399,7 @@ async function runImport(entity: Entity, rows: Record<string, string>[], dryRun:
   for (let i = 0; i < rows.length; i++) {
     const rowNum = i + 1 // 1-based data row (matches the wizard preview)
     try {
-      const outcome = await processRow(rows[i], dryRun)
+      const outcome = await processRow(rows[i])
       if (outcome === 'created') imported++
       else updated++
     } catch (e) {
@@ -395,6 +424,12 @@ function missingRequiredColumns(entity: Entity, headers: string[]): string[] {
 
 export async function POST(req: Request, { params }: { params: Promise<{ entity: string }> }) {
   try {
+    // data.edit guards ALL transports (multipart file, ?mode=preview, legacy JSON)
+    const ctx = await requirePerm('data.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+    const tenantId = user.tenantId
+
     const { entity } = await params
     if (!isImportEntity(entity)) {
       return NextResponse.json({ error: `Unknown import entity "${entity}"` }, { status: 404 })
@@ -469,7 +504,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ entity:
         )
       }
 
-      const result = await runImport(entity, parsed.rows, dryRun)
+      const result = await runImport(entity, parsed.rows, dryRun, tenantId)
       return NextResponse.json({ data: result })
     }
 
@@ -488,7 +523,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ entity:
     }
 
     const { rows, dryRun } = parsed.data
-    const result = await runImport(entity as Entity, rows, dryRun)
+    const result = await runImport(entity as Entity, rows, dryRun, tenantId)
     return NextResponse.json({ data: result })
   } catch (err) {
     console.error('POST /api/import failed', err)

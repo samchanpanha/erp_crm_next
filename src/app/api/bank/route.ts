@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { round2 } from '@/lib/doc-math'
 
 export const dynamic = 'force-dynamic'
@@ -11,12 +12,18 @@ export const dynamic = 'force-dynamic'
 // ---------------------------------------------------------------------------
 export async function GET() {
   try {
+    const ctx = await requirePerm('bank.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const accounts = await db.bankAccount.findMany({
+      where: { tenantId: user.tenantId },
       orderBy: [{ createdAt: 'asc' }, { name: 'asc' }],
       include: { _count: { select: { transactions: true } } },
     })
 
     const recentTransactions = await db.bankTransaction.findMany({
+      where: { tenantId: user.tenantId },
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
       take: 20,
       include: {

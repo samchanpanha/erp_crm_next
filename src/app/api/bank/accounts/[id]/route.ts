@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { round2 } from '@/lib/doc-math'
 import { z } from 'zod'
 
@@ -13,9 +14,13 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('bank.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const account = await db.bankAccount.findUnique({
-      where: { id },
+    const account = await db.bankAccount.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: {
         transactions: {
           orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
@@ -51,8 +56,14 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('bank.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.bankAccount.findUnique({ where: { id } })
+    const existing = await db.bankAccount.findFirst({
+      where: { id, tenantId: user.tenantId },
+    })
     if (!existing) {
       return NextResponse.json({ error: 'Bank account not found' }, { status: 404 })
     }
@@ -87,7 +98,7 @@ export async function PUT(
         data.openingBalance = opening
         // Recompute the running balance from the new opening anchor.
         const agg = await tx.bankTransaction.aggregate({
-          where: { accountId: id },
+          where: { accountId: id, tenantId: user.tenantId },
           _sum: { amount: true },
         })
         data.currentBalance = round2(opening + (agg._sum.amount ?? 0))
@@ -116,9 +127,13 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('bank.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.bankAccount.findUnique({
-      where: { id },
+    const existing = await db.bankAccount.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: { _count: { select: { transactions: true } } },
     })
     if (!existing) {

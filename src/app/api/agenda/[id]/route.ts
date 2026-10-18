@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,9 +21,13 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('agenda.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const event = await db.agendaEvent.findUnique({
-      where: { id },
+    const event = await db.agendaEvent.findFirst({
+      where: { id, tenantId: user.tenantId },
       include: { thirdParty: { select: { id: true, name: true, code: true } } },
     })
     if (!event) {
@@ -56,8 +61,12 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('agenda.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.agendaEvent.findUnique({ where: { id } })
+    const existing = await db.agendaEvent.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!existing) {
       return NextResponse.json({ error: 'Agenda event not found' }, { status: 404 })
     }
@@ -73,7 +82,10 @@ export async function PUT(
     const d = parsed.data
 
     if (d.thirdPartyId) {
-      const tp = await db.thirdParty.findUnique({ where: { id: d.thirdPartyId } })
+      const tp = await db.thirdParty.findFirst({
+        where: { id: d.thirdPartyId, tenantId: user.tenantId },
+        select: { id: true },
+      })
       if (!tp) {
         return NextResponse.json({ error: 'Third party not found' }, { status: 404 })
       }
@@ -111,8 +123,12 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const ctx = await requirePerm('agenda.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { id } = await params
-    const existing = await db.agendaEvent.findUnique({ where: { id } })
+    const existing = await db.agendaEvent.findFirst({ where: { id, tenantId: user.tenantId } })
     if (!existing) {
       return NextResponse.json({ error: 'Agenda event not found' }, { status: 404 })
     }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requirePerm } from '@/lib/auth'
 import { nextRef } from '@/lib/refs'
 import { computeTotals } from '@/lib/doc-math'
 
@@ -38,12 +39,16 @@ const poInclude = {
 /** GET /api/purchase-orders?q=&status=&thirdPartyId= */
 export async function GET(req: NextRequest) {
   try {
+    const ctx = await requirePerm('purchaseorders.view')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const { searchParams } = new URL(req.url)
     const q = searchParams.get('q')?.trim() ?? ''
     const status = searchParams.get('status')?.trim() ?? ''
     const thirdPartyId = searchParams.get('thirdPartyId')?.trim() ?? ''
 
-    const where: Record<string, unknown> = {}
+    const where: Record<string, unknown> = { tenantId: user.tenantId }
     if (q) {
       where.OR = [
         { ref: { contains: q } },
@@ -73,6 +78,10 @@ export async function GET(req: NextRequest) {
 /** POST /api/purchase-orders — create DRAFT order with ≥1 line */
 export async function POST(req: NextRequest) {
   try {
+    const ctx = await requirePerm('purchaseorders.edit')
+    if (ctx instanceof NextResponse) return ctx
+    const { user } = ctx
+
     const body = await req.json().catch(() => null)
     const parsed = createSchema.safeParse(body)
     if (!parsed.success) {
@@ -83,7 +92,9 @@ export async function POST(req: NextRequest) {
     }
     const { thirdPartyId, date, expectedDate, notes, lines } = parsed.data
 
-    const thirdParty = await db.thirdParty.findUnique({ where: { id: thirdPartyId } })
+    const thirdParty = await db.thirdParty.findFirst({
+      where: { id: thirdPartyId, tenantId: user.tenantId },
+    })
     if (!thirdParty) {
       return NextResponse.json({ error: 'Supplier not found' }, { status: 404 })
     }
@@ -108,7 +119,8 @@ export async function POST(req: NextRequest) {
       try {
         created = await db.purchaseOrder.create({
           data: {
-            ref: await nextRef('PO'),
+            ref: await nextRef(user.tenantId, 'PO'),
+            tenantId: user.tenantId,
             thirdPartyId,
             status: 'DRAFT',
             date: date ? new Date(date) : new Date(),
