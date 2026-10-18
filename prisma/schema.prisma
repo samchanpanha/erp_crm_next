@@ -535,6 +535,25 @@ model BankTransaction {
 }
 
 // ---------------------------------------------------------------------------
+// Settings (key-value app configuration) & printable document templates
+// ---------------------------------------------------------------------------
+model Setting {
+  key       String   @id // e.g. "company.name", "sales.defaultVatRate"
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model DocTemplate {
+  id        String   @id @default(cuid())
+  name      String
+  type      String // INVOICE | RECEIPT | PROPOSAL | ORDER | SUPPLIER_INVOICE
+  isDefault Boolean  @default(false)
+  config    String   @default("{}") // JSON blob validated by zod (see src/lib/template-schema.ts)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
 // Productivity — Agenda (calendar)
 // ---------------------------------------------------------------------------
 model AgendaEvent {

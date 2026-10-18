@@ -120,3 +120,33 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Print support (V2) — put `.print-area` around the node to isolate when
+   printing. JS adds `printing-doc` to <body> before window.print().
+   --------------------------------------------------------------------------- */
+@media print {
+  body.printing-doc * {
+    visibility: hidden !important;
+    box-shadow: none !important;
+  }
+  body.printing-doc .print-area,
+  body.printing-doc .print-area * {
+    visibility: visible !important;
+  }
+  body.printing-doc .print-area {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+  }
+  body.printing-doc {
+    background: white !important;
+  }
+  body.printing-doc .no-print {
+    display: none !important;
+  }
+}

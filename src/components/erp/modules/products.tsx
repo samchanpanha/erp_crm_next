@@ -27,6 +27,7 @@ import {
 import { useToast } from '@/hooks/use-toast'
 import { get, post, put, del } from '@/components/erp/lib/api'
 import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
+import { ImportExportButtons } from '@/components/erp/shared/import-export'
 import { StatusBadge, DocStatusBadge } from '@/components/erp/shared/status-badge'
 import { StatCard } from '@/components/erp/shared/stat-card'
 import { formatMoney, formatNumber } from '@/components/erp/shared/format'
@@ -245,9 +246,12 @@ export default function ProductsModule() {
         title="Products & Services"
         description="Catalog, pricing and stock levels"
         actions={
-          <Button onClick={openCreate} className="min-h-11">
-            <Plus className="mr-1.5 h-4 w-4" /> New product
-          </Button>
+          <>
+            <ImportExportButtons entity="products" queryKeysToInvalidate={[['products']]} />
+            <Button onClick={openCreate} className="min-h-11">
+              <Plus className="mr-1.5 h-4 w-4" /> New product
+            </Button>
+          </>
         }
       />
 

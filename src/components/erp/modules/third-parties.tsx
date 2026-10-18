@@ -26,6 +26,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
+import { ImportExportButtons } from '@/components/erp/shared/import-export'
 import { StatusBadge, DocStatusBadge, type Tone } from '@/components/erp/shared/status-badge'
 import { StatCard } from '@/components/erp/shared/stat-card'
 import { formatDate } from '@/components/erp/shared/format'
@@ -297,10 +298,13 @@ export default function ThirdPartiesModule() {
         title="Third Parties"
         description="Customers, prospects and suppliers — the heart of the CRM"
         actions={
-          <Button onClick={openCreate} className="min-h-11 sm:min-h-9">
-            <Plus className="h-4 w-4" aria-hidden />
-            New third party
-          </Button>
+          <>
+            <ImportExportButtons entity="third-parties" queryKeysToInvalidate={[['third-parties']]} />
+            <Button onClick={openCreate} className="min-h-11 sm:min-h-9">
+              <Plus className="h-4 w-4" aria-hidden />
+              New third party
+            </Button>
+          </>
         }
       />
 

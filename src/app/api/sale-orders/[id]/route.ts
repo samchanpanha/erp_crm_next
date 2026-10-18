@@ -34,7 +34,20 @@ const editSchema = z.object({
 })
 
 const orderInclude = {
-  thirdParty: { select: { id: true, name: true, code: true } },
+  thirdParty: {
+    select: {
+      id: true,
+      name: true,
+      code: true,
+      address: true,
+      zip: true,
+      city: true,
+      country: true,
+      email: true,
+      phone: true,
+      vatNumber: true,
+    },
+  },
   lines: { orderBy: { sort: 'asc' } },
 } as const
 

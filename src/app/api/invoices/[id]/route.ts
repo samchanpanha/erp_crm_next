@@ -33,7 +33,20 @@ const editSchema = z.object({
 })
 
 const invoiceInclude = {
-  thirdParty: { select: { id: true, name: true, code: true } },
+  thirdParty: {
+    select: {
+      id: true,
+      name: true,
+      code: true,
+      address: true,
+      zip: true,
+      city: true,
+      country: true,
+      email: true,
+      phone: true,
+      vatNumber: true,
+    },
+  },
   lines: { orderBy: { sort: 'asc' } },
   payments: { orderBy: { date: 'desc' } },
   saleOrder: { select: { id: true, ref: true, status: true } },

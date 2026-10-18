@@ -1,0 +1,928 @@
+     1→'use client'
+     2→
+     3→import { useMemo, useState } from 'react'
+     4→import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+     5→import {
+     6→  Building2, Eye, FileText, Globe, Loader2, Mail, MapPin, Pencil, Phone,
+     7→  Plus, Search, Star, Target, Trash2, Truck, Users,
+     8→} from 'lucide-react'
+     9→import { Button } from '@/components/ui/button'
+    10→import { Input } from '@/components/ui/input'
+    11→import { Label } from '@/components/ui/label'
+    12→import { Textarea } from '@/components/ui/textarea'
+    13→import { Skeleton } from '@/components/ui/skeleton'
+    14→import { Card, CardContent } from '@/components/ui/card'
+    15→import {
+    16→  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    17→} from '@/components/ui/dialog'
+    18→import {
+    19→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    20→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    21→} from '@/components/ui/alert-dialog'
+    22→import {
+    23→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    24→} from '@/components/ui/select'
+    25→import {
+    26→  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    27→} from '@/components/ui/table'
+    28→import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
+    29→import { StatusBadge, DocStatusBadge, type Tone } from '@/components/erp/shared/status-badge'
+    30→import { StatCard } from '@/components/erp/shared/stat-card'
+    31→import { formatDate } from '@/components/erp/shared/format'
+    32→import { get, post, put, del } from '@/components/erp/lib/api'
+    33→import { useToast } from '@/hooks/use-toast'
+    34→import { cn } from '@/lib/utils'
+    35→
+    36→// ---------------------------------------------------------------------------
+    37→// Types (mirror API payloads)
+    38→// ---------------------------------------------------------------------------
+    39→type ThirdPartyType = 'CUSTOMER' | 'PROSPECT' | 'SUPPLIER' | 'CUSTOMER_SUPPLIER'
+    40→type ThirdPartyStatus = 'ACTIVE' | 'SUSPENDED'
+    41→type PaymentTerms = 'ON_ORDER' | 'NET15' | 'NET30' | 'NET60'
+    42→
+    43→interface ThirdPartyCounts {
+    44→  contacts: number
+    45→  opportunities: number
+    46→  proposals: number
+    47→  saleOrders: number
+    48→  invoices: number
+    49→}
+    50→
+    51→interface ThirdPartyRow {
+    52→  id: string
+    53→  code: string
+    54→  name: string
+    55→  type: ThirdPartyType
+    56→  status: ThirdPartyStatus
+    57→  email: string | null
+    58→  phone: string | null
+    59→  website: string | null
+    60→  address: string | null
+    61→  zip: string | null
+    62→  city: string | null
+    63→  country: string | null
+    64→  vatNumber: string | null
+    65→  paymentTerms: PaymentTerms
+    66→  notes: string | null
+    67→  createdAt: string
+    68→  _count: ThirdPartyCounts
+    69→}
+    70→
+    71→interface ContactRow {
+    72→  id: string
+    73→  thirdPartyId: string | null
+    74→  firstName: string
+    75→  lastName: string
+    76→  position: string | null
+    77→  email: string | null
+    78→  phone: string | null
+    79→  mobile: string | null
+    80→  isPrimary: boolean
+    81→  createdAt: string
+    82→}
+    83→
+    84→interface DetailCounts extends ThirdPartyCounts {
+    85→  contracts: number
+    86→  purchaseOrders: number
+    87→  supplierInvoices: number
+    88→  tickets: number
+    89→  projects: number
+    90→  agendaEvents: number
+    91→}
+    92→
+    93→interface ThirdPartyDetail extends Omit<ThirdPartyRow, '_count'> {
+    94→  contacts: ContactRow[]
+    95→  _count: DetailCounts
+    96→}
+    97→
+    98→// ---------------------------------------------------------------------------
+    99→// Constants
+   100→// ---------------------------------------------------------------------------
+   101→const TYPE_TONE: Record<ThirdPartyType, Tone> = {
+   102→  CUSTOMER: 'success',
+   103→  PROSPECT: 'info',
+   104→  SUPPLIER: 'muted',
+   105→  CUSTOMER_SUPPLIER: 'neutral',
+   106→}
+   107→
+   108→const TYPE_LABEL: Record<ThirdPartyType, string> = {
+   109→  CUSTOMER: 'Customer',
+   110→  PROSPECT: 'Prospect',
+   111→  SUPPLIER: 'Supplier',
+   112→  CUSTOMER_SUPPLIER: 'Customer + Supplier',
+   113→}
+   114→
+   115→const PAYMENT_TERMS_LABEL: Record<PaymentTerms, string> = {
+   116→  ON_ORDER: 'On order',
+   117→  NET15: 'Net 15',
+   118→  NET30: 'Net 30',
+   119→  NET60: 'Net 60',
+   120→}
+   121→
+   122→const emptyContactForm = { firstName: '', lastName: '', position: '', email: '', phone: '' }
+   123→
+   124→const emptyTpForm = {
+   125→  name: '',
+   126→  type: 'CUSTOMER' as ThirdPartyType,
+   127→  status: 'ACTIVE' as ThirdPartyStatus,
+   128→  email: '',
+   129→  phone: '',
+   130→  website: '',
+   131→  address: '',
+   132→  zip: '',
+   133→  city: '',
+   134→  country: '',
+   135→  vatNumber: '',
+   136→  paymentTerms: 'NET30' as PaymentTerms,
+   137→  notes: '',
+   138→}
+   139→
+   140→type TpFormState = typeof emptyTpForm
+   141→type ContactFormState = typeof emptyContactForm
+   142→
+   143→type ConfirmState =
+   144→  | { kind: 'tp'; tp: ThirdPartyRow }
+   145→  | { kind: 'contact'; contact: ContactRow; thirdPartyId: string }
+   146→  | null
+   147→
+   148→// ---------------------------------------------------------------------------
+   149→// Module
+   150→// ---------------------------------------------------------------------------
+   151→export default function ThirdPartiesModule() {
+   152→  const { toast } = useToast()
+   153→  const queryClient = useQueryClient()
+   154→
+   155→  // filters
+   156→  const [search, setSearch] = useState('')
+   157→  const [typeFilter, setTypeFilter] = useState<string>('ALL')
+   158→  const [statusFilter, setStatusFilter] = useState<string>('ALL')
+   159→
+   160→  // dialogs
+   161→  const [formOpen, setFormOpen] = useState(false)
+   162→  const [editing, setEditing] = useState<ThirdPartyRow | null>(null)
+   163→  const [form, setForm] = useState<TpFormState>(emptyTpForm)
+   164→  const [detailId, setDetailId] = useState<string | null>(null)
+   165→  const [confirm, setConfirm] = useState<ConfirmState>(null)
+   166→  const [contactForm, setContactForm] = useState<ContactFormState>(emptyContactForm)
+   167→
+   168→  const listQuery = useQuery({
+   169→    queryKey: ['third-parties'],
+   170→    queryFn: () => get<ThirdPartyRow[]>('/api/third-parties'),
+   171→  })
+   172→
+   173→  const detailQuery = useQuery({
+   174→    queryKey: ['third-party', detailId],
+   175→    queryFn: () => get<ThirdPartyDetail>(`/api/third-parties/${detailId}`),
+   176→    enabled: detailId !== null,
+   177→  })
+   178→
+   179→  const data = listQuery.data ?? []
+   180→  const totalCounts = useMemo(
+   181→    () => ({
+   182→      CUSTOMER: data.filter((t) => t.type === 'CUSTOMER').length,
+   183→      PROSPECT: data.filter((t) => t.type === 'PROSPECT').length,
+   184→      SUPPLIER: data.filter((t) => t.type === 'SUPPLIER').length,
+   185→    }),
+   186→    [data],
+   187→  )
+   188→
+   189→  const filtered = useMemo(() => {
+   190→    const q = search.trim().toLowerCase()
+   191→    return data.filter((tp) => {
+   192→      if (typeFilter !== 'ALL' && tp.type !== typeFilter) return false
+   193→      if (statusFilter !== 'ALL' && tp.status !== statusFilter) return false
+   194→      if (!q) return true
+   195→      return [tp.name, tp.code, tp.email ?? '', tp.city ?? ''].some((v) =>
+   196→        v.toLowerCase().includes(q),
+   197→      )
+   198→    })
+   199→  }, [data, search, typeFilter, statusFilter])
+   200→
+   201→  const invalidateAll = () => {
+   202→    void queryClient.invalidateQueries({ queryKey: ['third-parties'] })
+   203→    void queryClient.invalidateQueries({ queryKey: ['third-party'] })
+   204→  }
+   205→
+   206→  // ---- mutations ----------------------------------------------------------
+   207→  const saveMutation = useMutation({
+   208→    mutationFn: async () => {
+   209→      const payload = { ...form, name: form.name.trim() }
+   210→      if (editing) return put(`/api/third-parties/${editing.id}`, payload)
+   211→      return post('/api/third-parties', payload)
+   212→    },
+   213→    onSuccess: () => {
+   214→      toast({
+   215→        title: editing ? 'Third party updated' : 'Third party created',
+   216→        description: form.name.trim(),
+   217→      })
+   218→      invalidateAll()
+   219→      setFormOpen(false)
+   220→      setEditing(null)
+   221→    },
+   222→    onError: (err: Error) =>
+   223→      toast({ title: 'Save failed', description: err.message, variant: 'destructive' }),
+   224→  })
+   225→
+   226→  const deleteTpMutation = useMutation({
+   227→    mutationFn: (id: string) => del(`/api/third-parties/${id}`),
+   228→    onSuccess: (_res, id) => {
+   229→      toast({ title: 'Third party deleted' })
+   230→      if (detailId === id) setDetailId(null)
+   231→      invalidateAll()
+   232→    },
+   233→    onError: (err: Error) =>
+   234→      toast({ title: 'Cannot delete', description: err.message, variant: 'destructive' }),
+   235→  })
+   236→
+   237→  const addContactMutation = useMutation({
+   238→    mutationFn: () =>
+   239→      post('/api/contacts', { thirdPartyId: detailId, ...contactForm }),
+   240→    onSuccess: () => {
+   241→      toast({ title: 'Contact added', description: `${contactForm.firstName} ${contactForm.lastName}`.trim() })
+   242→      setContactForm(emptyContactForm)
+   243→      invalidateAll()
+   244→    },
+   245→    onError: (err: Error) =>
+   246→      toast({ title: 'Could not add contact', description: err.message, variant: 'destructive' }),
+   247→  })
+   248→
+   249→  const deleteContactMutation = useMutation({
+   250→    mutationFn: (id: string) => del(`/api/contacts/${id}`),
+   251→    onSuccess: () => {
+   252→      toast({ title: 'Contact deleted' })
+   253→      invalidateAll()
+   254→    },
+   255→    onError: (err: Error) =>
+   256→      toast({ title: 'Could not delete contact', description: err.message, variant: 'destructive' }),
+   257→  })
+   258→
+   259→  // ---- dialog helpers -----------------------------------------------------
+   260→  const openCreate = () => {
+   261→    setEditing(null)
+   262→    setForm(emptyTpForm)
+   263→    setFormOpen(true)
+   264→  }
+   265→
+   266→  const openEdit = (tp: ThirdPartyRow) => {
+   267→    setEditing(tp)
+   268→    setForm({
+   269→      name: tp.name,
+   270→      type: tp.type,
+   271→      status: tp.status,
+   272→      email: tp.email ?? '',
+   273→      phone: tp.phone ?? '',
+   274→      website: tp.website ?? '',
+   275→      address: tp.address ?? '',
+   276→      zip: tp.zip ?? '',
+   277→      city: tp.city ?? '',
+   278→      country: tp.country ?? '',
+   279→      vatNumber: tp.vatNumber ?? '',
+   280→      paymentTerms: tp.paymentTerms,
+   281→      notes: tp.notes ?? '',
+   282→    })
+   283→    setFormOpen(true)
+   284→  }
+   285→
+   286→  const detail = detailQuery.data
+   287→  const canSaveTp = form.name.trim().length > 0 && !saveMutation.isPending
+   288→  const canAddContact =
+   289→    contactForm.firstName.trim().length > 0 &&
+   290→    contactForm.lastName.trim().length > 0 &&
+   291→    !addContactMutation.isPending
+   292→
+   293→  return (
+   294→    <div className="space-y-5">
+   295→      <PageHeader
+   296→        icon={Building2}
+   297→        title="Third Parties"
+   298→        description="Customers, prospects and suppliers — the heart of the CRM"
+   299→        actions={
+   300→          <Button onClick={openCreate} className="min-h-11 sm:min-h-9">
+   301→            <Plus className="h-4 w-4" aria-hidden />
+   302→            New third party
+   303→          </Button>
+   304→        }
+   305→      />
+   306→
+   307→      {/* Summary chips */}
+   308→      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+   309→        <StatCard title="Customers" value={totalCounts.CUSTOMER} icon={Building2} />
+   310→        <StatCard title="Prospects" value={totalCounts.PROSPECT} icon={Target} />
+   311→        <StatCard title="Suppliers" value={totalCounts.SUPPLIER} icon={Truck} />
+   312→        <StatCard title="All third parties" value={data.length} icon={Users} hint="incl. customer + supplier" />
+   313→      </div>
+   314→
+   315→      {/* Toolbar */}
+   316→      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+   317→        <div className="relative w-full sm:w-72">
+   318→          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+   319→          <Input
+   320→            value={search}
+   321→            onChange={(e) => setSearch(e.target.value)}
+   322→            placeholder="Search name, code, email, city…"
+   323→            className="pl-8"
+   324→            aria-label="Search third parties"
+   325→          />
+   326→        </div>
+   327→        <Select value={typeFilter} onValueChange={setTypeFilter}>
+   328→          <SelectTrigger className="w-full sm:w-44" aria-label="Filter by type">
+   329→            <SelectValue placeholder="Type" />
+   330→          </SelectTrigger>
+   331→          <SelectContent>
+   332→            <SelectItem value="ALL">All types</SelectItem>
+   333→            <SelectItem value="CUSTOMER">Customer</SelectItem>
+   334→            <SelectItem value="PROSPECT">Prospect</SelectItem>
+   335→            <SelectItem value="SUPPLIER">Supplier</SelectItem>
+   336→            <SelectItem value="CUSTOMER_SUPPLIER">Customer + Supplier</SelectItem>
+   337→          </SelectContent>
+   338→        </Select>
+   339→        <Select value={statusFilter} onValueChange={setStatusFilter}>
+   340→          <SelectTrigger className="w-full sm:w-40" aria-label="Filter by status">
+   341→            <SelectValue placeholder="Status" />
+   342→          </SelectTrigger>
+   343→          <SelectContent>
+   344→            <SelectItem value="ALL">All statuses</SelectItem>
+   345→            <SelectItem value="ACTIVE">Active</SelectItem>
+   346→            <SelectItem value="SUSPENDED">Suspended</SelectItem>
+   347→          </SelectContent>
+   348→        </Select>
+   349→      </div>
+   350→
+   351→      {/* Table */}
+   352→      <Card className="py-0 gap-0">
+   353→        <CardContent className="p-0">
+   354→          {listQuery.isError && (
+   355→            <p className="p-4 text-sm text-destructive">
+   356→              Failed to load third parties: {listQuery.error.message}
+   357→            </p>
+   358→          )}
+   359→          <div className="overflow-x-auto">
+   360→            <Table className="min-w-[900px]">
+   361→              <TableHeader>
+   362→                <TableRow>
+   363→                  <TableHead>Code</TableHead>
+   364→                  <TableHead>Name</TableHead>
+   365→                  <TableHead>Type</TableHead>
+   366→                  <TableHead>City / Country</TableHead>
+   367→                  <TableHead>Phone</TableHead>
+   368→                  <TableHead>Payment terms</TableHead>
+   369→                  <TableHead className="text-center">Docs</TableHead>
+   370→                  <TableHead>Status</TableHead>
+   371→                  <TableHead className="text-right">Actions</TableHead>
+   372→                </TableRow>
+   373→              </TableHeader>
+   374→              <TableBody>
+   375→                {listQuery.isPending &&
+   376→                  Array.from({ length: 5 }).map((_, i) => (
+   377→                    <TableRow key={i}>
+   378→                      <TableCell colSpan={9}>
+   379→                        <Skeleton className="h-8 w-full" />
+   380→                      </TableCell>
+   381→                    </TableRow>
+   382→                  ))}
+   383→                {!listQuery.isPending && filtered.length === 0 && (
+   384→                  <TableRow>
+   385→                    <TableCell colSpan={9} className="p-0">
+   386→                      <div className="p-6">
+   387→                        <EmptyState
+   388→                          icon={Building2}
+   389→                          title={data.length === 0 ? 'No third parties yet' : 'No third parties match your filters'}
+   390→                          description={
+   391→                            data.length === 0
+   392→                              ? 'Create your first customer, prospect or supplier to get started.'
+   393→                              : 'Try clearing the search box or switching the type/status filters.'
+   394→                          }
+   395→                          actionLabel={data.length === 0 ? 'New third party' : undefined}
+   396→                          onAction={data.length === 0 ? openCreate : undefined}
+   397→                        />
+   398→                      </div>
+   399→                    </TableCell>
+   400→                  </TableRow>
+   401→                )}
+   402→                {filtered.map((tp) => (
+   403→                  <TableRow key={tp.id} className="group">
+   404→                    <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+   405→                      {tp.code}
+   406→                    </TableCell>
+   407→                    <TableCell className="max-w-[220px]">
+   408→                      <button
+   409→                        type="button"
+   410→                        onClick={() => setDetailId(tp.id)}
+   411→                        className="rounded text-left font-medium hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+   412→                        aria-label={`View details of ${tp.name}`}
+   413→                      >
+   414→                        {tp.name}
+   415→                      </button>
+   416→                      {tp.email && (
+   417→                        <p className="truncate text-xs text-muted-foreground">{tp.email}</p>
+   418→                      )}
+   419→                    </TableCell>
+   420→                    <TableCell>
+   421→                      <StatusBadge status={tp.type} label={TYPE_LABEL[tp.type]} tone={TYPE_TONE[tp.type]} />
+   422→                    </TableCell>
+   423→                    <TableCell className="whitespace-nowrap text-sm">
+   424→                      {[tp.city, tp.country].filter(Boolean).join(', ') || '—'}
+   425→                    </TableCell>
+   426→                    <TableCell className="whitespace-nowrap text-sm">{tp.phone ?? '—'}</TableCell>
+   427→                    <TableCell className="whitespace-nowrap text-sm">
+   428→                      {PAYMENT_TERMS_LABEL[tp.paymentTerms] ?? tp.paymentTerms}
+   429→                    </TableCell>
+   430→                    <TableCell className="text-center">
+   431→                      <span
+   432→                        className="inline-flex items-center gap-1 text-sm tabular-nums"
+   433→                        title="Proposals, sale orders and invoices"
+   434→                      >
+   435→                        <FileText className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+   436→                        {tp._count.proposals + tp._count.saleOrders + tp._count.invoices}
+   437→                      </span>
+   438→                    </TableCell>
+   439→                    <TableCell>
+   440→                      <DocStatusBadge status={tp.status} />
+   441→                    </TableCell>
+   442→                    <TableCell>
+   443→                      <div className="flex items-center justify-end gap-1">
+   444→                        <Button
+   445→                          variant="ghost"
+   446→                          size="icon"
+   447→                          className="h-9 w-9 sm:h-8 sm:w-8"
+   448→                          onClick={() => setDetailId(tp.id)}
+   449→                          aria-label={`View ${tp.name}`}
+   450→                        >
+   451→                          <Eye className="h-4 w-4" aria-hidden />
+   452→                        </Button>
+   453→                        <Button
+   454→                          variant="ghost"
+   455→                          size="icon"
+   456→                          className="h-9 w-9 sm:h-8 sm:w-8"
+   457→                          onClick={() => openEdit(tp)}
+   458→                          aria-label={`Edit ${tp.name}`}
+   459→                        >
+   460→                          <Pencil className="h-4 w-4" aria-hidden />
+   461→                        </Button>
+   462→                        <Button
+   463→                          variant="ghost"
+   464→                          size="icon"
+   465→                          className="h-9 w-9 text-muted-foreground hover:text-destructive sm:h-8 sm:w-8"
+   466→                          onClick={() => setConfirm({ kind: 'tp', tp })}
+   467→                          aria-label={`Delete ${tp.name}`}
+   468→                        >
+   469→                          <Trash2 className="h-4 w-4" aria-hidden />
+   470→                        </Button>
+   471→                      </div>
+   472→                    </TableCell>
+   473→                  </TableRow>
+   474→                ))}
+   475→              </TableBody>
+   476→            </Table>
+   477→          </div>
+   478→          {!listQuery.isPending && filtered.length > 0 && (
+   479→            <p className="border-t px-4 py-2 text-xs text-muted-foreground">
+   480→              {filtered.length} of {data.length} third part{data.length === 1 ? 'y' : 'ies'}
+   481→            </p>
+   482→          )}
+   483→        </CardContent>
+   484→      </Card>
+   485→
+   486→      {/* Create / edit dialog */}
+   487→      <Dialog open={formOpen} onOpenChange={setFormOpen}>
+   488→        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+   489→          <DialogHeader>
+   490→            <DialogTitle>{editing ? `Edit ${editing.name}` : 'New third party'}</DialogTitle>
+   491→            <DialogDescription>
+   492→              {editing
+   493→                ? `Reference ${editing.code} — update the company details below.`
+   494→                : 'Register a customer, prospect or supplier. A reference code is generated automatically.'}
+   495→            </DialogDescription>
+   496→          </DialogHeader>
+   497→
+   498→          <div className="grid gap-4 sm:grid-cols-2">
+   499→            <div className="space-y-1.5 sm:col-span-2">
+   500→              <Label htmlFor="tp-name">
+   501→                Name <span className="text-destructive">*</span>
+   502→              </Label>
+   503→              <Input
+   504→                id="tp-name"
+   505→                value={form.name}
+   506→                onChange={(e) => setForm({ ...form, name: e.target.value })}
+   507→                placeholder="Acme Manufacturing"
+   508→                autoFocus
+   509→              />
+   510→            </div>
+   511→            <div className="space-y-1.5">
+   512→              <Label htmlFor="tp-type">Type</Label>
+   513→              <Select
+   514→                value={form.type}
+   515→                onValueChange={(v) => setForm({ ...form, type: v as ThirdPartyType })}
+   516→              >
+   517→                <SelectTrigger id="tp-type" className="w-full">
+   518→                  <SelectValue />
+   519→                </SelectTrigger>
+   520→                <SelectContent>
+   521→                  <SelectItem value="CUSTOMER">Customer</SelectItem>
+   522→                  <SelectItem value="PROSPECT">Prospect</SelectItem>
+   523→                  <SelectItem value="SUPPLIER">Supplier</SelectItem>
+   524→                  <SelectItem value="CUSTOMER_SUPPLIER">Customer + Supplier</SelectItem>
+   525→                </SelectContent>
+   526→              </Select>
+   527→            </div>
+   528→            <div className="space-y-1.5">
+   529→              <Label htmlFor="tp-status">Status</Label>
+   530→              <Select
+   531→                value={form.status}
+   532→                onValueChange={(v) => setForm({ ...form, status: v as ThirdPartyStatus })}
+   533→              >
+   534→                <SelectTrigger id="tp-status" className="w-full">
+   535→                  <SelectValue />
+   536→                </SelectTrigger>
+   537→                <SelectContent>
+   538→                  <SelectItem value="ACTIVE">Active</SelectItem>
+   539→                  <SelectItem value="SUSPENDED">Suspended</SelectItem>
+   540→                </SelectContent>
+   541→              </Select>
+   542→            </div>
+   543→            <div className="space-y-1.5">
+   544→              <Label htmlFor="tp-email">Email</Label>
+   545→              <Input
+   546→                id="tp-email"
+   547→                type="email"
+   548→                value={form.email}
+   549→                onChange={(e) => setForm({ ...form, email: e.target.value })}
+   550→                placeholder="contact@company.com"
+   551→              />
+   552→            </div>
+   553→            <div className="space-y-1.5">
+   554→              <Label htmlFor="tp-phone">Phone</Label>
+   555→              <Input
+   556→                id="tp-phone"
+   557→                value={form.phone}
+   558→                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+   559→                placeholder="+1 555 010 0000"
+   560→              />
+   561→            </div>
+   562→            <div className="space-y-1.5">
+   563→              <Label htmlFor="tp-website">Website</Label>
+   564→              <Input
+   565→                id="tp-website"
+   566→                value={form.website}
+   567→                onChange={(e) => setForm({ ...form, website: e.target.value })}
+   568→                placeholder="https://company.com"
+   569→              />
+   570→            </div>
+   571→            <div className="space-y-1.5">
+   572→              <Label htmlFor="tp-vat">VAT number</Label>
+   573→              <Input
+   574→                id="tp-vat"
+   575→                value={form.vatNumber}
+   576→                onChange={(e) => setForm({ ...form, vatNumber: e.target.value })}
+   577→                placeholder="US-0000000"
+   578→              />
+   579→            </div>
+   580→            <div className="space-y-1.5 sm:col-span-2">
+   581→              <Label htmlFor="tp-address">Address</Label>
+   582→              <Input
+   583→                id="tp-address"
+   584→                value={form.address}
+   585→                onChange={(e) => setForm({ ...form, address: e.target.value })}
+   586→                placeholder="100 Corporate Ave"
+   587→              />
+   588→            </div>
+   589→            <div className="space-y-1.5">
+   590→              <Label htmlFor="tp-zip">ZIP / Postal code</Label>
+   591→              <Input
+   592→                id="tp-zip"
+   593→                value={form.zip}
+   594→                onChange={(e) => setForm({ ...form, zip: e.target.value })}
+   595→              />
+   596→            </div>
+   597→            <div className="space-y-1.5">
+   598→              <Label htmlFor="tp-city">City</Label>
+   599→              <Input
+   600→                id="tp-city"
+   601→                value={form.city}
+   602→                onChange={(e) => setForm({ ...form, city: e.target.value })}
+   603→              />
+   604→            </div>
+   605→            <div className="space-y-1.5">
+   606→              <Label htmlFor="tp-country">Country</Label>
+   607→              <Input
+   608→                id="tp-country"
+   609→                value={form.country}
+   610→                onChange={(e) => setForm({ ...form, country: e.target.value })}
+   611→              />
+   612→            </div>
+   613→            <div className="space-y-1.5">
+   614→              <Label htmlFor="tp-terms">Payment terms</Label>
+   615→              <Select
+   616→                value={form.paymentTerms}
+   617→                onValueChange={(v) => setForm({ ...form, paymentTerms: v as PaymentTerms })}
+   618→              >
+   619→                <SelectTrigger id="tp-terms" className="w-full">
+   620→                  <SelectValue />
+   621→                </SelectTrigger>
+   622→                <SelectContent>
+   623→                  <SelectItem value="ON_ORDER">On order</SelectItem>
+   624→                  <SelectItem value="NET15">Net 15</SelectItem>
+   625→                  <SelectItem value="NET30">Net 30</SelectItem>
+   626→                  <SelectItem value="NET60">Net 60</SelectItem>
+   627→                </SelectContent>
+   628→              </Select>
+   629→            </div>
+   630→            <div className="space-y-1.5 sm:col-span-2">
+   631→              <Label htmlFor="tp-notes">Notes</Label>
+   632→              <Textarea
+   633→                id="tp-notes"
+   634→                value={form.notes}
+   635→                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+   636→                rows={3}
+   637→                placeholder="Internal notes about this third party…"
+   638→              />
+   639→            </div>
+   640→          </div>
+   641→
+   642→          <DialogFooter className="gap-2">
+   643→            <Button variant="outline" onClick={() => setFormOpen(false)}>
+   644→              Cancel
+   645→            </Button>
+   646→            <Button onClick={() => saveMutation.mutate()} disabled={!canSaveTp}>
+   647→              {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+   648→              {editing ? 'Save changes' : 'Create third party'}
+   649→            </Button>
+   650→          </DialogFooter>
+   651→        </DialogContent>
+   652→      </Dialog>
+   653→
+   654→      {/* Detail dialog */}
+   655→      <Dialog open={detailId !== null} onOpenChange={(o) => !o && setDetailId(null)}>
+   656→        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+   657→          {detailQuery.isPending && (
+   658→            <div className="space-y-4" aria-busy="true">
+   659→              <DialogTitle className="sr-only">Third party details (loading)</DialogTitle>
+   660→              <Skeleton className="h-8 w-1/2" />
+   661→              <Skeleton className="h-24 w-full" />
+   662→              <Skeleton className="h-40 w-full" />
+   663→            </div>
+   664→          )}
+   665→          {detailQuery.isError && (
+   666→            <p className="text-sm text-destructive">
+   667→              Failed to load details: {detailQuery.error.message}
+   668→            </p>
+   669→          )}
+   670→          {detail && (
+   671→            <>
+   672→              <DialogHeader>
+   673→                <DialogTitle className="flex flex-wrap items-center gap-2 pr-6">
+   674→                  {detail.name}
+   675→                  <span className="font-mono text-xs font-normal text-muted-foreground">{detail.code}</span>
+   676→                </DialogTitle>
+   677→                <DialogDescription className="flex flex-wrap items-center gap-2 pt-1">
+   678→                  <StatusBadge status={detail.type} label={TYPE_LABEL[detail.type]} tone={TYPE_TONE[detail.type]} />
+   679→                  <DocStatusBadge status={detail.status} />
+   680→                  <StatusBadge status={detail.paymentTerms} label={PAYMENT_TERMS_LABEL[detail.paymentTerms] ?? detail.paymentTerms} tone="muted" />
+   681→                </DialogDescription>
+   682→              </DialogHeader>
+   683→
+   684→              {/* Contact info block */}
+   685→              <div className="grid gap-x-6 gap-y-2 rounded-lg border p-4 text-sm sm:grid-cols-2">
+   686→                <InfoLine icon={Mail} label="Email" value={detail.email} />
+   687→                <InfoLine icon={Phone} label="Phone" value={detail.phone} />
+   688→                <InfoLine
+   689→                  icon={Globe}
+   690→                  label="Website"
+   691→                  value={detail.website}
+   692→                  href={detail.website ?? undefined}
+   693→                />
+   694→                <InfoLine
+   695→                  icon={MapPin}
+   696→                  label="Address"
+   697→                  value={[detail.address, [detail.zip, detail.city].filter(Boolean).join(' '), detail.country]
+   698→                    .filter((v) => v && v.trim().length > 0)
+   699→                    .join(' · ')}
+   700→                />
+   701→                <InfoLine icon={FileText} label="VAT number" value={detail.vatNumber} />
+   702→                <InfoLine icon={Building2} label="Created" value={formatDate(detail.createdAt)} />
+   703→                {detail.notes && (
+   704→                  <p className="whitespace-pre-line rounded bg-muted/60 p-2 text-xs text-muted-foreground sm:col-span-2">
+   705→                    {detail.notes}
+   706→                  </p>
+   707→                )}
+   708→              </div>
+   709→
+   710→              {/* Related doc counts */}
+   711→              <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+   712→                <CountBox label="Contacts" value={detail._count.contacts} />
+   713→                <CountBox label="Opportunities" value={detail._count.opportunities} />
+   714→                <CountBox label="Proposals" value={detail._count.proposals} />
+   715→                <CountBox label="Sale orders" value={detail._count.saleOrders} />
+   716→                <CountBox label="Invoices" value={detail._count.invoices} />
+   717→              </div>
+   718→
+   719→              {/* Contacts section */}
+   720→              <section aria-label={`Contacts of ${detail.name}`} className="space-y-3">
+   721→                <h3 className="flex items-center gap-2 text-sm font-semibold">
+   722→                  <Users className="h-4 w-4 text-primary" aria-hidden />
+   723→                  Contacts
+   724→                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+   725→                    {detail.contacts.length}
+   726→                  </span>
+   727→                </h3>
+   728→
+   729→                {detail.contacts.length === 0 ? (
+   730→                  <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+   731→                    No contacts yet — add the first one below.
+   732→                  </p>
+   733→                ) : (
+   734→                  <ul className="space-y-2">
+   735→                    {detail.contacts.map((c) => (
+   736→                      <li
+   737→                        key={c.id}
+   738→                        className="flex items-start justify-between gap-2 rounded-md border p-3"
+   739→                      >
+   740→                        <div className="min-w-0">
+   741→                          <p className="flex items-center gap-1.5 text-sm font-medium">
+   742→                            {c.firstName} {c.lastName}
+   743→                            {c.isPrimary && (
+   744→                              <Star
+   745→                                className="h-3.5 w-3.5 fill-amber-400 text-amber-400"
+   746→                                aria-label="Primary contact"
+   747→                              />
+   748→                            )}
+   749→                          </p>
+   750→                          {c.position && (
+   751→                            <p className="text-xs text-muted-foreground">{c.position}</p>
+   752→                          )}
+   753→                          <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+   754→                            {c.email && (
+   755→                              <span className="inline-flex items-center gap-1">
+   756→                                <Mail className="h-3 w-3" aria-hidden />
+   757→                                {c.email}
+   758→                              </span>
+   759→                            )}
+   760→                            {c.phone && (
+   761→                              <span className="inline-flex items-center gap-1">
+   762→                                <Phone className="h-3 w-3" aria-hidden />
+   763→                                {c.phone}
+   764→                              </span>
+   765→                            )}
+   766→                          </p>
+   767→                        </div>
+   768→                        <Button
+   769→                          variant="ghost"
+   770→                          size="icon"
+   771→                          className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive sm:h-8 sm:w-8"
+   772→                          onClick={() =>
+   773→                            setConfirm({ kind: 'contact', contact: c, thirdPartyId: detail.id })
+   774→                          }
+   775→                          aria-label={`Delete contact ${c.firstName} ${c.lastName}`}
+   776→                        >
+   777→                          <Trash2 className="h-4 w-4" aria-hidden />
+   778→                        </Button>
+   779→                      </li>
+   780→                    ))}
+   781→                  </ul>
+   782→                )}
+   783→
+   784→                {/* Inline add-contact form */}
+   785→                <div className="rounded-lg border bg-muted/30 p-3">
+   786→                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   787→                    Add a contact
+   788→                  </p>
+   789→                  <div className="grid gap-2 sm:grid-cols-2">
+   790→                    <Input
+   791→                      value={contactForm.firstName}
+   792→                      onChange={(e) => setContactForm({ ...contactForm, firstName: e.target.value })}
+   793→                      placeholder="First name *"
+   794→                      aria-label="Contact first name"
+   795→                    />
+   796→                    <Input
+   797→                      value={contactForm.lastName}
+   798→                      onChange={(e) => setContactForm({ ...contactForm, lastName: e.target.value })}
+   799→                      placeholder="Last name *"
+   800→                      aria-label="Contact last name"
+   801→                    />
+   802→                    <Input
+   803→                      value={contactForm.position}
+   804→                      onChange={(e) => setContactForm({ ...contactForm, position: e.target.value })}
+   805→                      placeholder="Position"
+   806→                      aria-label="Contact position"
+   807→                    />
+   808→                    <Input
+   809→                      type="email"
+   810→                      value={contactForm.email}
+   811→                      onChange={(e) => setContactForm({ ...contactForm, email: e.target.value })}
+   812→                      placeholder="Email"
+   813→                      aria-label="Contact email"
+   814→                    />
+   815→                    <Input
+   816→                      value={contactForm.phone}
+   817→                      onChange={(e) => setContactForm({ ...contactForm, phone: e.target.value })}
+   818→                      placeholder="Phone"
+   819→                      aria-label="Contact phone"
+   820→                      className="sm:col-span-1"
+   821→                    />
+   822→                    <Button
+   823→                      className="min-h-11 sm:min-h-9"
+   824→                      onClick={() => addContactMutation.mutate()}
+   825→                      disabled={!canAddContact}
+   826→                    >
+   827→                      {addContactMutation.isPending ? (
+   828→                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+   829→                      ) : (
+   830→                        <Plus className="h-4 w-4" aria-hidden />
+   831→                      )}
+   832→                      Add contact
+   833→                    </Button>
+   834→                  </div>
+   835→                </div>
+   836→              </section>
+   837→            </>
+   838→          )}
+   839→        </DialogContent>
+   840→      </Dialog>
+   841→
+   842→      {/* Delete confirmation (third party + contact) */}
+   843→      <AlertDialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
+   844→        <AlertDialogContent>
+   845→          <AlertDialogHeader>
+   846→            <AlertDialogTitle>
+   847→              {confirm?.kind === 'contact' ? 'Delete this contact?' : `Delete ${confirm?.tp.name ?? ''}?`}
+   848→            </AlertDialogTitle>
+   849→            <AlertDialogDescription>
+   850→              {confirm?.kind === 'contact'
+   851→                ? `${confirm.contact.firstName} ${confirm.contact.lastName} will be permanently removed.`
+   852→                : 'This will permanently remove the third party along with its contacts and opportunities. Third parties linked to proposals, orders or invoices cannot be deleted.'}
+   853→            </AlertDialogDescription>
+   854→          </AlertDialogHeader>
+   855→          <AlertDialogFooter>
+   856→            <AlertDialogCancel>Cancel</AlertDialogCancel>
+   857→            <AlertDialogAction
+   858→              className="bg-destructive text-white hover:bg-destructive/90"
+   859→              onClick={() => {
+   860→                if (!confirm) return
+   861→                if (confirm.kind === 'tp') deleteTpMutation.mutate(confirm.tp.id)
+   862→                else deleteContactMutation.mutate(confirm.contact.id)
+   863→                setConfirm(null)
+   864→              }}
+   865→            >
+   866→              Delete
+   867→            </AlertDialogAction>
+   868→          </AlertDialogFooter>
+   869→        </AlertDialogContent>
+   870→      </AlertDialog>
+   871→    </div>
+   872→  )
+   873→}
+   874→
+   875→// ---------------------------------------------------------------------------
+   876→// Small local building blocks
+   877→// ---------------------------------------------------------------------------
+   878→function InfoLine({
+   879→  icon: Icon,
+   880→  label,
+   881→  value,
+   882→  href,
+   883→}: {
+   884→  icon: typeof Mail
+   885→  label: string
+   886→  value: string | null
+   887→  href?: string
+   888→}) {
+   889→  return (
+   890→    <div className="flex items-start gap-2 min-w-0">
+   891→      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+   892→      <div className="min-w-0">
+   893→        <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
+   894→        {value ? (
+   895→          href ? (
+   896→            <a
+   897→              href={href}
+   898→              target="_blank"
+   899→              rel="noreferrer"
+   900→              className="break-all text-sm text-primary hover:underline"
+   901→            >
+   902→              {value}
+   903→            </a>
+   904→          ) : (
+   905→            <p className="break-all text-sm">{value}</p>
+   906→          )
+   907→        ) : (
+   908→          <p className="text-sm text-muted-foreground">—</p>
+   909→        )}
+   910→      </div>
+   911→    </div>
+   912→  )
+   913→}
+   914→
+   915→function CountBox({ label, value }: { label: string; value: number }) {
+   916→  return (
+   917→    <div
+   918→      className={cn(
+   919→        'rounded-md border px-2 py-2 text-center',
+   920→        value === 0 && 'opacity-50',
+   921→      )}
+   922→    >
+   923→      <p className="text-base font-bold tabular-nums">{value}</p>
+   924→      <p className="truncate text-[11px] text-muted-foreground">{label}</p>
+   925→    </div>
+   926→  )
+   927→}
+   928→

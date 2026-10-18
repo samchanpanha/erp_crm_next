@@ -24,7 +24,20 @@ const actionSchema = z.object({
 })
 
 const fullInclude = {
-  thirdParty: { select: { id: true, name: true, code: true } },
+  thirdParty: {
+    select: {
+      id: true,
+      name: true,
+      code: true,
+      address: true,
+      zip: true,
+      city: true,
+      country: true,
+      email: true,
+      phone: true,
+      vatNumber: true,
+    },
+  },
   payments: { orderBy: { date: 'desc' as const } },
 } as const
 

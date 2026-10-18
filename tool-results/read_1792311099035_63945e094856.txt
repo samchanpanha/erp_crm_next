@@ -1,0 +1,841 @@
+     1→'use client'
+     2→
+     3→import { useMemo, useState } from 'react'
+     4→import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+     5→import {
+     6→  ArrowRightLeft,
+     7→  Ban,
+     8→  CheckCircle2,
+     9→  CreditCard,
+    10→  Eye,
+    11→  MoreHorizontal,
+    12→  Pencil,
+    13→  Plus,
+    14→  Receipt,
+    15→  Sigma,
+    16→  TriangleAlert,
+    17→  Trash2,
+    18→} from 'lucide-react'
+    19→
+    20→import { del, get, post, put } from '../lib/api'
+    21→import { EmptyState, PageHeader } from '../shared/page-header'
+    22→import { DocStatusBadge } from '../shared/status-badge'
+    23→import { StatCard } from '../shared/stat-card'
+    24→import { formatMoney, formatDate, toDateInput } from '../shared/format'
+    25→import { LineEditor, type EditorLine, type ProductOption } from '../shared/line-editor'
+    26→import { RecordPaymentDialog, type PaymentRow, type PaymentTarget } from './payments'
+    27→import { useToast } from '@/hooks/use-toast'
+    28→import { Button } from '@/components/ui/button'
+    29→import { Input } from '@/components/ui/input'
+    30→import { Label } from '@/components/ui/label'
+    31→import { Textarea } from '@/components/ui/textarea'
+    32→import { Card, CardContent } from '@/components/ui/card'
+    33→import { Skeleton } from '@/components/ui/skeleton'
+    34→import {
+    35→  Dialog,
+    36→  DialogContent,
+    37→  DialogDescription,
+    38→  DialogFooter,
+    39→  DialogHeader,
+    40→  DialogTitle,
+    41→} from '@/components/ui/dialog'
+    42→import {
+    43→  DropdownMenu,
+    44→  DropdownMenuContent,
+    45→  DropdownMenuItem,
+    46→  DropdownMenuSeparator,
+    47→  DropdownMenuTrigger,
+    48→} from '@/components/ui/dropdown-menu'
+    49→import {
+    50→  Select,
+    51→  SelectContent,
+    52→  SelectItem,
+    53→  SelectTrigger,
+    54→  SelectValue,
+    55→} from '@/components/ui/select'
+    56→import {
+    57→  Table,
+    58→  TableBody,
+    59→  TableCell,
+    60→  TableHead,
+    61→  TableHeader,
+    62→  TableRow,
+    63→} from '@/components/ui/table'
+    64→
+    65→// ---------------------------------------------------------------------------
+    66→// Types
+    67→// ---------------------------------------------------------------------------
+    68→interface ThirdPartyRef {
+    69→  id: string
+    70→  name: string
+    71→  code: string
+    72→}
+    73→
+    74→interface DocLine {
+    75→  id: string
+    76→  productId: string | null
+    77→  label: string
+    78→  qty: number
+    79→  unitPrice: number
+    80→  discountPct: number
+    81→  vatRate: number
+    82→  sort: number
+    83→}
+    84→
+    85→interface InvoiceListItem {
+    86→  id: string
+    87→  ref: string
+    88→  status: string
+    89→  date: string
+    90→  dueDate: string | null
+    91→  subtotal: number
+    92→  discountTotal: number
+    93→  vatTotal: number
+    94→  total: number
+    95→  paidAmount: number
+    96→  notes: string | null
+    97→  thirdParty: ThirdPartyRef
+    98→  _count: { lines: number; payments: number }
+    99→}
+   100→
+   101→interface InvoiceDetail extends Omit<InvoiceListItem, '_count'> {
+   102→  lines: DocLine[]
+   103→  payments: PaymentRow[]
+   104→  saleOrder?: { id: string; ref: string; status: string } | null
+   105→}
+   106→
+   107→interface DocForm {
+   108→  thirdPartyId: string
+   109→  date: string
+   110→  dueDate: string
+   111→  notes: string
+   112→  lines: EditorLine[]
+   113→}
+   114→
+   115→const STATUSES = ['DRAFT', 'UNPAID', 'PARTIAL', 'PAID', 'CANCELLED'] as const
+   116→
+   117→const round2 = (n: number) => Math.round(n * 100) / 100
+   118→
+   119→function qs(params: Record<string, string>) {
+   120→  const sp = new URLSearchParams()
+   121→  for (const [k, v] of Object.entries(params)) if (v && v !== 'ALL') sp.set(k, v)
+   122→  const s = sp.toString()
+   123→  return s ? `?${s}` : ''
+   124→}
+   125→
+   126→function normalizeList<T>(raw: unknown, keys: string[]): T[] {
+   127→  if (Array.isArray(raw)) return raw as T[]
+   128→  if (raw && typeof raw === 'object') {
+   129→    const obj = raw as Record<string, unknown>
+   130→    for (const k of keys) if (Array.isArray(obj[k])) return obj[k] as T[]
+   131→  }
+   132→  return []
+   133→}
+   134→
+   135→const emptyForm = (): DocForm => ({
+   136→  thirdPartyId: '',
+   137→  date: toDateInput(new Date()),
+   138→  dueDate: '',
+   139→  notes: '',
+   140→  lines: [{ label: '', qty: 1, unitPrice: 0, discountPct: 0, vatRate: 20 }],
+   141→})
+   142→
+   143→const toEditorLines = (lines: DocLine[] | undefined): EditorLine[] =>
+   144→  (lines ?? []).map((l) => ({
+   145→    productId: l.productId ?? undefined,
+   146→    label: l.label,
+   147→    qty: l.qty,
+   148→    unitPrice: l.unitPrice,
+   149→    discountPct: l.discountPct,
+   150→    vatRate: l.vatRate,
+   151→  }))
+   152→
+   153→const remainingOf = (i: { total: number; paidAmount: number }) => round2(i.total - i.paidAmount)
+   154→
+   155→/** True when an unpaid invoice is past its due date */
+   156→function isOverdue(i: { status: string; dueDate: string | null }): boolean {
+   157→  if (!i.dueDate || !['UNPAID', 'PARTIAL'].includes(i.status)) return false
+   158→  const today = new Date()
+   159→  today.setHours(0, 0, 0, 0)
+   160→  return new Date(i.dueDate) < today
+   161→}
+   162→
+   163→// ---------------------------------------------------------------------------
+   164→// Component
+   165→// ---------------------------------------------------------------------------
+   166→export default function InvoicesModule() {
+   167→  const qc = useQueryClient()
+   168→  const { toast } = useToast()
+   169→
+   170→  const [q, setQ] = useState('')
+   171→  const [status, setStatus] = useState('ALL')
+   172→  const [tpFilter, setTpFilter] = useState('ALL')
+   173→  const [createOpen, setCreateOpen] = useState(false)
+   174→  const [editing, setEditing] = useState<InvoiceDetail | null>(null)
+   175→  const [detailId, setDetailId] = useState<string | null>(null)
+   176→  const [form, setForm] = useState<DocForm>(emptyForm)
+   177→  const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null)
+   178→  const [payOpen, setPayOpen] = useState(false)
+   179→
+   180→  const listQ = useQuery({
+   181→    queryKey: ['invoices', q, status, tpFilter],
+   182→    queryFn: () => get<InvoiceListItem[]>(`/api/invoices${qs({ q, status, thirdPartyId: tpFilter })}`),
+   183→  })
+   184→
+   185→  const thirdPartiesQ = useQuery({
+   186→    queryKey: ['third-parties', 'for-docs'],
+   187→    queryFn: async () => {
+   188→      try {
+   189→        const rows = normalizeList<ThirdPartyRef & { type?: string }>(
+   190→          await get<unknown>('/api/third-parties'),
+   191→          ['thirdParties', 'items', 'data']
+   192→        )
+   193→        return rows.filter((t) => t.type !== 'SUPPLIER')
+   194→      } catch {
+   195→        return [] as ThirdPartyRef[]
+   196→      }
+   197→    },
+   198→  })
+   199→
+   200→  const productsQ = useQuery({
+   201→    queryKey: ['products', 'active-for-docs'],
+   202→    queryFn: async () => {
+   203→      try {
+   204→        return normalizeList<ProductOption>(await get<unknown>('/api/products?status=ACTIVE'), ['products', 'items', 'data'])
+   205→      } catch {
+   206→        return [] as ProductOption[]
+   207→      }
+   208→    },
+   209→  })
+   210→
+   211→  const detailQ = useQuery({
+   212→    queryKey: ['invoice', detailId],
+   213→    enabled: !!detailId,
+   214→    queryFn: () => get<InvoiceDetail>(`/api/invoices/${detailId}`),
+   215→  })
+   216→
+   217→  const list = listQ.data ?? []
+   218→  const thirdParties = thirdPartiesQ.data ?? []
+   219→  const products = productsQ.data ?? []
+   220→  const detail = detailId ? detailQ.data : undefined
+   221→
+   222→  // ----- Stats -----
+   223→  const stats = useMemo(() => {
+   224→    const all = listQ.data ?? []
+   225→    const outstanding = all
+   226→      .filter((i) => i.status === 'UNPAID' || i.status === 'PARTIAL')
+   227→      .reduce((s, i) => s + remainingOf(i), 0)
+   228→    const overdue = all.filter(isOverdue).length
+   229→    const collected = all.reduce((s, i) => s + i.paidAmount, 0)
+   230→    return { outstanding, overdue, collected }
+   231→  }, [listQ.data])
+   232→
+   233→  // ----- Mutations -----
+   234→  const invalidateAll = () => {
+   235→    qc.invalidateQueries({ queryKey: ['invoices'] })
+   236→    qc.invalidateQueries({ queryKey: ['invoice'] })
+   237→    qc.invalidateQueries({ queryKey: ['payments'] })
+   238→    qc.invalidateQueries({ queryKey: ['sale-orders', 'lite'] })
+   239→    qc.invalidateQueries({ queryKey: ['dashboard'] })
+   240→  }
+   241→
+   242→  const saveMut = useMutation({
+   243→    mutationFn: async (payload: DocForm) => {
+   244→      const body = {
+   245→        thirdPartyId: payload.thirdPartyId,
+   246→        date: payload.date || undefined,
+   247→        dueDate: payload.dueDate || undefined,
+   248→        notes: payload.notes || undefined,
+   249→        lines: payload.lines
+   250→          .filter((l) => l.label.trim().length > 0)
+   251→          .map((l) => ({
+   252→            productId: l.productId || undefined,
+   253→            label: l.label.trim(),
+   254→            qty: l.qty,
+   255→            unitPrice: l.unitPrice,
+   256→            discountPct: l.discountPct,
+   257→            vatRate: l.vatRate,
+   258→          })),
+   259→      }
+   260→      if (editing) return put<InvoiceDetail>(`/api/invoices/${editing.id}`, body)
+   261→      return post<InvoiceDetail>('/api/invoices', body)
+   262→    },
+   263→    onSuccess: (data) => {
+   264→      invalidateAll()
+   265→      setCreateOpen(false)
+   266→      setEditing(null)
+   267→      toast({ title: editing ? 'Invoice updated' : 'Invoice created', description: `${data.ref} · ${formatMoney(data.total)}` })
+   268→    },
+   269→    onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
+   270→  })
+   271→
+   272→  const actionMut = useMutation({
+   273→    mutationFn: ({ id, action }: { id: string; action: string }) =>
+   274→      put<InvoiceDetail>(`/api/invoices/${id}`, { action }),
+   275→    onSuccess: (_data, vars) => {
+   276→      invalidateAll()
+   277→      toast({ title: vars.action === 'validate' ? 'Invoice validated' : 'Invoice cancelled' })
+   278→    },
+   279→    onError: (e: Error) => toast({ title: 'Action failed', description: e.message, variant: 'destructive' }),
+   280→  })
+   281→
+   282→  const deleteMut = useMutation({
+   283→    mutationFn: (id: string) => del(`/api/invoices/${id}`),
+   284→    onSuccess: () => {
+   285→      invalidateAll()
+   286→      setDetailId(null)
+   287→      toast({ title: 'Draft invoice deleted' })
+   288→    },
+   289→    onError: (e: Error) => toast({ title: 'Delete failed', description: e.message, variant: 'destructive' }),
+   290→  })
+   291→
+   292→  const busy = saveMut.isPending || actionMut.isPending || deleteMut.isPending
+   293→
+   294→  // ----- Handlers -----
+   295→  const openCreate = () => {
+   296→    setEditing(null)
+   297→    setForm(emptyForm())
+   298→    setCreateOpen(true)
+   299→  }
+   300→
+   301→  const openEdit = (i: Omit<InvoiceListItem, '_count'>) => {
+   302→    setEditing(null)
+   303→    setDetailId(null)
+   304→    qc.fetchQuery({
+   305→      queryKey: ['invoice', i.id],
+   306→      queryFn: () => get<InvoiceDetail>(`/api/invoices/${i.id}`),
+   307→    }).then((d) => {
+   308→      setForm({
+   309→        thirdPartyId: d.thirdParty.id,
+   310→        date: toDateInput(d.date),
+   311→        dueDate: toDateInput(d.dueDate),
+   312→        notes: d.notes ?? '',
+   313→        lines: toEditorLines(d.lines),
+   314→      })
+   315→      setEditing(d)
+   316→      setCreateOpen(true)
+   317→    })
+   318→  }
+   319→
+   320→  const openPayment = (i: { id: string; ref: string; total: number; paidAmount: number; thirdParty: ThirdPartyRef }) => {
+   321→    setPayTarget({
+   322→      id: i.id,
+   323→      ref: i.ref,
+   324→      thirdPartyName: i.thirdParty.name,
+   325→      remaining: remainingOf(i),
+   326→    })
+   327→    setPayOpen(true)
+   328→  }
+   329→
+   330→  const submitForm = () => {
+   331→    if (!form.thirdPartyId) {
+   332→      toast({ title: 'Third party required', variant: 'destructive' })
+   333→      return
+   334→    }
+   335→    const usable = form.lines.filter((l) => l.label.trim().length > 0)
+   336→    if (usable.length === 0) {
+   337→      toast({ title: 'At least one line required', variant: 'destructive' })
+   338→      return
+   339→    }
+   340→    if (usable.some((l) => !(l.qty > 0))) {
+   341→      toast({ title: 'Invalid quantity', description: 'Quantities must be greater than 0.', variant: 'destructive' })
+   342→      return
+   343→    }
+   344→    saveMut.mutate(form)
+   345→  }
+   346→
+   347→  const availableActions = (i: InvoiceListItem) => {
+   348→    const act = (action: string, label: string, icon: React.ReactNode, destructive = false) => (
+   349→      <DropdownMenuItem
+   350→        key={action}
+   351→        disabled={busy}
+   352→        className={destructive ? 'text-destructive focus:text-destructive' : undefined}
+   353→        onSelect={() => actionMut.mutate({ id: i.id, action })}
+   354→      >
+   355→        {icon}
+   356→        {label}
+   357→      </DropdownMenuItem>
+   358→    )
+   359→    const items: React.ReactNode[] = []
+   360→    if (i.status === 'DRAFT') items.push(act('validate', 'Validate (send)', <CheckCircle2 className="h-4 w-4" />))
+   361→    if (['UNPAID', 'PARTIAL'].includes(i.status)) {
+   362→      items.push(
+   363→        <DropdownMenuItem key="pay" onSelect={() => openPayment(i)}>
+   364→          <CreditCard className="h-4 w-4" />
+   365→          Record payment
+   366→        </DropdownMenuItem>
+   367→      )
+   368→    }
+   369→    if (['DRAFT', 'UNPAID', 'PARTIAL'].includes(i.status)) {
+   370→      items.push(act('cancel', 'Cancel invoice', <Ban className="h-4 w-4" />, true))
+   371→    }
+   372→    if (i.status === 'DRAFT') {
+   373→      items.push(
+   374→        <DropdownMenuSeparator key="sep-del" />,
+   375→        <DropdownMenuItem
+   376→          key="delete"
+   377→          disabled={busy}
+   378→          className="text-destructive focus:text-destructive"
+   379→          onSelect={() => deleteMut.mutate(i.id)}
+   380→        >
+   381→          <Trash2 className="h-4 w-4" />
+   382→          Delete draft
+   383→        </DropdownMenuItem>
+   384→      )
+   385→    }
+   386→    return items
+   387→  }
+   388→
+   389→  return (
+   390→    <div className="space-y-5">
+   391→      <PageHeader
+   392→        icon={Receipt}
+   393→        title="Customer invoices"
+   394→        description="Bill your customers and keep an eye on what is outstanding or overdue."
+   395→        actions={
+   396→          <Button onClick={openCreate} className="h-10">
+   397→            <Plus className="h-4 w-4" /> New invoice
+   398→          </Button>
+   399→        }
+   400→      />
+   401→
+   402→      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+   403→        <StatCard
+   404→          title="Outstanding"
+   405→          value={stats.outstanding}
+   406→          isMoney
+   407→          icon={Sigma}
+   408→          tone="warning"
+   409→          hint="Unpaid + partially paid balances"
+   410→        />
+   411→        <StatCard
+   412→          title="Overdue invoices"
+   413→          value={stats.overdue}
+   414→          icon={TriangleAlert}
+   415→          tone="danger"
+   416→          hint="Past due date and not fully paid"
+   417→        />
+   418→        <StatCard
+   419→          title="Collected"
+   420→          value={stats.collected}
+   421→          isMoney
+   422→          icon={CreditCard}
+   423→          tone="success"
+   424→          hint="Total payments received"
+   425→        />
+   426→      </div>
+   427→
+   428→      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+   429→        <Input
+   430→          value={q}
+   431→          onChange={(e) => setQ(e.target.value)}
+   432→          placeholder="Search ref, client or notes…"
+   433→          className="sm:max-w-xs"
+   434→          aria-label="Search invoices"
+   435→        />
+   436→        <Select value={status} onValueChange={setStatus}>
+   437→          <SelectTrigger className="w-full sm:w-44" aria-label="Filter by status">
+   438→            <SelectValue placeholder="Status" />
+   439→          </SelectTrigger>
+   440→          <SelectContent>
+   441→            <SelectItem value="ALL">All statuses</SelectItem>
+   442→            {STATUSES.map((s) => (
+   443→              <SelectItem key={s} value={s}>
+   444→                {s.replaceAll('_', ' ').charAt(0) + s.replaceAll('_', ' ').slice(1).toLowerCase()}
+   445→              </SelectItem>
+   446→            ))}
+   447→          </SelectContent>
+   448→        </Select>
+   449→        <Select value={tpFilter} onValueChange={setTpFilter}>
+   450→          <SelectTrigger className="w-full sm:w-56" aria-label="Filter by third party">
+   451→            <SelectValue placeholder="Third party" />
+   452→          </SelectTrigger>
+   453→          <SelectContent>
+   454→            <SelectItem value="ALL">All third parties</SelectItem>
+   455→            {thirdParties.map((t) => (
+   456→              <SelectItem key={t.id} value={t.id}>
+   457→                {t.name}
+   458→              </SelectItem>
+   459→            ))}
+   460→          </SelectContent>
+   461→        </Select>
+   462→      </div>
+   463→
+   464→      <Card className="py-0 gap-0">
+   465→        <CardContent className="p-0">
+   466→          {listQ.isLoading ? (
+   467→            <div className="space-y-3 p-4">
+   468→              {Array.from({ length: 5 }).map((_, i) => (
+   469→                <Skeleton key={i} className="h-10 w-full" />
+   470→              ))}
+   471→            </div>
+   472→          ) : list.length === 0 ? (
+   473→            <div className="p-6">
+   474→              <EmptyState
+   475→                icon={Receipt}
+   476→                title="No invoices found"
+   477→                description="Create an invoice directly or bill an order from the Sale Orders module."
+   478→                actionLabel="New invoice"
+   479→                onAction={openCreate}
+   480→              />
+   481→            </div>
+   482→          ) : (
+   483→            <div className="overflow-x-auto">
+   484→              <Table>
+   485→                <TableHeader>
+   486→                  <TableRow>
+   487→                    <TableHead>Ref</TableHead>
+   488→                    <TableHead>Date</TableHead>
+   489→                    <TableHead>Due date</TableHead>
+   490→                    <TableHead>Third party</TableHead>
+   491→                    <TableHead className="text-right">Total</TableHead>
+   492→                    <TableHead className="text-right">Paid</TableHead>
+   493→                    <TableHead>Status</TableHead>
+   494→                    <TableHead className="w-32 text-right">Actions</TableHead>
+   495→                  </TableRow>
+   496→                </TableHeader>
+   497→                <TableBody>
+   498→                  {list.map((i) => (
+   499→                    <TableRow key={i.id} className="cursor-pointer" onClick={() => setDetailId(i.id)}>
+   500→                      <TableCell className="font-medium tabular-nums">{i.ref}</TableCell>
+   501→                      <TableCell className="whitespace-nowrap">{formatDate(i.date)}</TableCell>
+   502→                      <TableCell className="whitespace-nowrap">
+   503→                        <span className="inline-flex items-center gap-1.5">
+   504→                          {formatDate(i.dueDate)}
+   505→                          {isOverdue(i) && (
+   506→                            <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-700">
+   507→                              Overdue
+   508→                            </span>
+   509→                          )}
+   510→                        </span>
+   511→                      </TableCell>
+   512→                      <TableCell className="max-w-44 truncate">{i.thirdParty.name}</TableCell>
+   513→                      <TableCell className="text-right font-semibold tabular-nums">
+   514→                        {formatMoney(i.total)}
+   515→                      </TableCell>
+   516→                      <TableCell className="text-right tabular-nums text-muted-foreground">
+   517→                        {formatMoney(i.paidAmount)}
+   518→                      </TableCell>
+   519→                      <TableCell>
+   520→                        <DocStatusBadge status={i.status} />
+   521→                      </TableCell>
+   522→                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+   523→                        <div className="flex items-center justify-end gap-1">
+   524→                          <Button
+   525→                            variant="ghost"
+   526→                            size="icon"
+   527→                            className="relative h-9 w-9 before:absolute before:-inset-1.5"
+   528→                            onClick={() => setDetailId(i.id)}
+   529→                            aria-label={`View ${i.ref}`}
+   530→                          >
+   531→                            <Eye className="h-4 w-4" />
+   532→                          </Button>
+   533→                          {i.status === 'DRAFT' && (
+   534→                            <Button
+   535→                              variant="ghost"
+   536→                              size="icon"
+   537→                              className="relative h-9 w-9 before:absolute before:-inset-1.5"
+   538→                              onClick={() => openEdit(i)}
+   539→                              aria-label={`Edit ${i.ref}`}
+   540→                            >
+   541→                              <Pencil className="h-4 w-4" />
+   542→                            </Button>
+   543→                          )}
+   544→                          {['UNPAID', 'PARTIAL'].includes(i.status) && (
+   545→                            <Button
+   546→                              variant="ghost"
+   547→                              size="icon"
+   548→                              className="relative h-9 w-9 before:absolute before:-inset-1.5 text-primary"
+   549→                              onClick={() => openPayment(i)}
+   550→                              aria-label={`Record payment for ${i.ref}`}
+   551→                            >
+   552→                              <CreditCard className="h-4 w-4" />
+   553→                            </Button>
+   554→                          )}
+   555→                          <DropdownMenu>
+   556→                            <DropdownMenuTrigger asChild>
+   557→                              <Button
+   558→                                variant="ghost"
+   559→                                size="icon"
+   560→                                className="relative h-9 w-9 before:absolute before:-inset-1.5"
+   561→                                aria-label={`Actions for ${i.ref}`}
+   562→                              >
+   563→                                <MoreHorizontal className="h-4 w-4" />
+   564→                              </Button>
+   565→                            </DropdownMenuTrigger>
+   566→                            <DropdownMenuContent align="end" className="w-56">
+   567→                              {availableActions(i)}
+   568→                            </DropdownMenuContent>
+   569→                          </DropdownMenu>
+   570→                        </div>
+   571→                      </TableCell>
+   572→                    </TableRow>
+   573→                  ))}
+   574→                </TableBody>
+   575→              </Table>
+   576→            </div>
+   577→          )}
+   578→        </CardContent>
+   579→      </Card>
+   580→
+   581→      {/* Create / Edit dialog */}
+   582→      <Dialog open={createOpen} onOpenChange={(o) => { if (!o) { setCreateOpen(false); setEditing(null) } }}>
+   583→        <DialogContent className="sm:max-w-3xl">
+   584→          <DialogHeader>
+   585→            <DialogTitle>{editing ? `Edit invoice ${editing.ref}` : 'New customer invoice'}</DialogTitle>
+   586→            <DialogDescription>
+   587→              Draft invoices stay editable — validate them to request payment.
+   588→            </DialogDescription>
+   589→          </DialogHeader>
+   590→          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+   591→            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+   592→              <div className="space-y-1.5">
+   593→                <Label htmlFor="in-tp">Third party *</Label>
+   594→                <Select value={form.thirdPartyId} onValueChange={(v) => setForm((f) => ({ ...f, thirdPartyId: v }))}>
+   595→                  <SelectTrigger id="in-tp" className="w-full" aria-label="Third party">
+   596→                    <SelectValue placeholder={thirdParties.length ? 'Select…' : 'Loading…'} />
+   597→                  </SelectTrigger>
+   598→                  <SelectContent>
+   599→                    {thirdParties.map((t) => (
+   600→                      <SelectItem key={t.id} value={t.id}>
+   601→                        {t.name}
+   602→                      </SelectItem>
+   603→                    ))}
+   604→                  </SelectContent>
+   605→                </Select>
+   606→              </div>
+   607→              <div className="space-y-1.5">
+   608→                <Label htmlFor="in-date">Date</Label>
+   609→                <Input
+   610→                  id="in-date"
+   611→                  type="date"
+   612→                  value={form.date}
+   613→                  onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+   614→                />
+   615→              </div>
+   616→              <div className="space-y-1.5">
+   617→                <Label htmlFor="in-due">Due date</Label>
+   618→                <Input
+   619→                  id="in-due"
+   620→                  type="date"
+   621→                  value={form.dueDate}
+   622→                  onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))}
+   623→                />
+   624→              </div>
+   625→            </div>
+   626→
+   627→            <LineEditor
+   628→              lines={form.lines}
+   629→              onChange={(lines) => setForm((f) => ({ ...f, lines }))}
+   630→              products={products}
+   631→            />
+   632→
+   633→            <div className="space-y-1.5">
+   634→              <Label htmlFor="in-notes">Notes</Label>
+   635→              <Textarea
+   636→                id="in-notes"
+   637→                rows={2}
+   638→                value={form.notes}
+   639→                onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+   640→                placeholder="Payment terms, bank details…"
+   641→              />
+   642→            </div>
+   643→          </div>
+   644→          <DialogFooter className="gap-2">
+   645→            <Button variant="outline" onClick={() => { setCreateOpen(false); setEditing(null) }} disabled={busy}>
+   646→              Cancel
+   647→            </Button>
+   648→            <Button onClick={submitForm} disabled={busy}>
+   649→              {editing ? 'Save changes' : 'Create invoice'}
+   650→            </Button>
+   651→          </DialogFooter>
+   652→        </DialogContent>
+   653→      </Dialog>
+   654→
+   655→      {/* Detail dialog */}
+   656→      <Dialog open={!!detailId} onOpenChange={(o) => !o && setDetailId(null)}>
+   657→        <DialogContent className="sm:max-w-2xl">
+   658→          {detail ? (
+   659→            <>
+   660→              <DialogHeader>
+   661→                <div className="flex flex-wrap items-center gap-2">
+   662→                  <DialogTitle className="tabular-nums">{detail.ref}</DialogTitle>
+   663→                  <DocStatusBadge status={detail.status} />
+   664→                </div>
+   665→                <DialogDescription>
+   666→                  {detail.thirdParty.name} ({detail.thirdParty.code})
+   667→                  {detail.saleOrder ? ` · from order ${detail.saleOrder.ref}` : ''}
+   668→                </DialogDescription>
+   669→              </DialogHeader>
+   670→
+   671→              <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+   672→                <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-4">
+   673→                  <div>
+   674→                    <dt className="text-xs text-muted-foreground">Date</dt>
+   675→                    <dd>{formatDate(detail.date)}</dd>
+   676→                  </div>
+   677→                  <div>
+   678→                    <dt className="text-xs text-muted-foreground">Due date</dt>
+   679→                    <dd className={isOverdue(detail) ? 'font-medium text-rose-600' : undefined}>
+   680→                      {formatDate(detail.dueDate)}
+   681→                    </dd>
+   682→                  </div>
+   683→                  <div>
+   684→                    <dt className="text-xs text-muted-foreground">Total</dt>
+   685→                    <dd className="font-semibold">{formatMoney(detail.total)}</dd>
+   686→                  </div>
+   687→                  <div>
+   688→                    <dt className="text-xs text-muted-foreground">Remaining</dt>
+   689→                    <dd className="font-semibold text-primary">{formatMoney(remainingOf(detail))}</dd>
+   690→                  </div>
+   691→                </dl>
+   692→
+   693→                {detail.notes && (
+   694→                  <p className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">{detail.notes}</p>
+   695→                )}
+   696→
+   697→                <div className="overflow-x-auto rounded-lg border">
+   698→                  <Table>
+   699→                    <TableHeader>
+   700→                      <TableRow>
+   701→                        <TableHead>Label</TableHead>
+   702→                        <TableHead className="text-right">Qty</TableHead>
+   703→                        <TableHead className="text-right">Unit price</TableHead>
+   704→                        <TableHead className="text-right">Total</TableHead>
+   705→                      </TableRow>
+   706→                    </TableHeader>
+   707→                    <TableBody>
+   708→                      {detail.lines.map((l) => (
+   709→                        <TableRow key={l.id}>
+   710→                          <TableCell>{l.label}</TableCell>
+   711→                          <TableCell className="text-right tabular-nums">{l.qty}</TableCell>
+   712→                          <TableCell className="text-right tabular-nums">{formatMoney(l.unitPrice)}</TableCell>
+   713→                          <TableCell className="text-right font-medium tabular-nums">
+   714→                            {formatMoney(l.qty * l.unitPrice * (1 - l.discountPct / 100))}
+   715→                          </TableCell>
+   716→                        </TableRow>
+   717→                      ))}
+   718→                    </TableBody>
+   719→                  </Table>
+   720→                </div>
+   721→
+   722→                <dl className="ml-auto max-w-56 space-y-1 text-sm">
+   723→                  <div className="flex justify-between">
+   724→                    <dt className="text-muted-foreground">Subtotal</dt>
+   725→                    <dd className="tabular-nums">{formatMoney(detail.subtotal)}</dd>
+   726→                  </div>
+   727→                  <div className="flex justify-between">
+   728→                    <dt className="text-muted-foreground">VAT</dt>
+   729→                    <dd className="tabular-nums">{formatMoney(detail.vatTotal)}</dd>
+   730→                  </div>
+   731→                  <div className="flex justify-between border-t pt-1 font-semibold">
+   732→                    <dt>Total</dt>
+   733→                    <dd className="tabular-nums text-primary">{formatMoney(detail.total)}</dd>
+   734→                  </div>
+   735→                  <div className="flex justify-between">
+   736→                    <dt className="text-muted-foreground">Paid</dt>
+   737→                    <dd className="tabular-nums text-emerald-600">{formatMoney(detail.paidAmount)}</dd>
+   738→                  </div>
+   739→                </dl>
+   740→
+   741→                {detail.payments.length > 0 && (
+   742→                  <div>
+   743→                    <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   744→                      Payments
+   745→                    </p>
+   746→                    <ul className="divide-y rounded-lg border text-sm">
+   747→                      {detail.payments.map((p) => (
+   748→                        <li key={p.id} className="flex items-center justify-between gap-3 px-3 py-2">
+   749→                          <span className="flex items-center gap-2 min-w-0">
+   750→                            <CreditCard className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+   751→                            <span className="truncate">
+   752→                              {formatDate(p.date)} · {p.reference || p.method.replaceAll('_', ' ').toLowerCase()}
+   753→                            </span>
+   754→                          </span>
+   755→                          <span className="font-medium tabular-nums text-emerald-600">
+   756→                            +{formatMoney(p.amount)}
+   757→                          </span>
+   758→                        </li>
+   759→                      ))}
+   760→                    </ul>
+   761→                  </div>
+   762→                )}
+   763→              </div>
+   764→
+   765→              <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
+   766→                <div>
+   767→                  {detail.saleOrder && (
+   768→                    <Button
+   769→                      variant="secondary"
+   770→                      size="sm"
+   771→                      onClick={() => { setDetailId(null); window.location.hash = '#/sale-orders' }}
+   772→                    >
+   773→                      <ArrowRightLeft className="h-4 w-4" /> View order {detail.saleOrder.ref}
+   774→                    </Button>
+   775→                  )}
+   776→                </div>
+   777→                <div className="flex flex-wrap items-center justify-end gap-1.5">
+   778→                  {detail.status === 'DRAFT' && (
+   779→                    <Button size="sm" disabled={busy} onClick={() => actionMut.mutate({ id: detail.id, action: 'validate' })}>
+   780→                      <CheckCircle2 className="h-4 w-4" /> Validate
+   781→                    </Button>
+   782→                  )}
+   783→                  {detail.status === 'DRAFT' && (
+   784→                    <Button size="sm" variant="outline" onClick={() => openEdit(detail)} disabled={busy}>
+   785→                      <Pencil className="h-4 w-4" /> Edit
+   786→                    </Button>
+   787→                  )}
+   788→                  {['UNPAID', 'PARTIAL'].includes(detail.status) && (
+   789→                    <Button size="sm" onClick={() => openPayment(detail)} disabled={remainingOf(detail) <= 0}>
+   790→                      <CreditCard className="h-4 w-4" /> Record payment
+   791→                    </Button>
+   792→                  )}
+   793→                  {['DRAFT', 'UNPAID', 'PARTIAL'].includes(detail.status) && (
+   794→                    <Button
+   795→                      size="sm"
+   796→                      variant="outline"
+   797→                      className="text-destructive"
+   798→                      disabled={busy}
+   799→                      onClick={() => actionMut.mutate({ id: detail.id, action: 'cancel' })}
+   800→                    >
+   801→                      <Ban className="h-4 w-4" /> Cancel
+   802→                    </Button>
+   803→                  )}
+   804→                  {detail.status === 'DRAFT' && (
+   805→                    <Button
+   806→                      size="sm"
+   807→                      variant="outline"
+   808→                      className="text-destructive"
+   809→                      disabled={busy}
+   810→                      onClick={() => deleteMut.mutate(detail.id)}
+   811→                    >
+   812→                      <Trash2 className="h-4 w-4" /> Delete
+   813→                    </Button>
+   814→                  )}
+   815→                  {['PAID', 'CANCELLED'].includes(detail.status) && (
+   816→                    <p className="mr-1 text-xs text-muted-foreground">
+   817→                      {detail.status === 'PAID' ? 'This invoice is fully settled.' : 'This invoice was cancelled.'}
+   818→                    </p>
+   819→                  )}
+   820→                </div>
+   821→              </DialogFooter>
+   822→            </>
+   823→          ) : (
+   824→            <div className="space-y-3 py-4">
+   825→              <Skeleton className="h-8 w-48" />
+   826→              <Skeleton className="h-40 w-full" />
+   827→            </div>
+   828→          )}
+   829→        </DialogContent>
+   830→      </Dialog>
+   831→
+   832→      <RecordPaymentDialog
+   833→        open={payOpen}
+   834→        onOpenChange={setPayOpen}
+   835→        mode="fixed"
+   836→        target={payTarget}
+   837→      />
+   838→    </div>
+   839→  )
+   840→}
+   841→

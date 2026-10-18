@@ -1,0 +1,1069 @@
+     1→'use client'
+     2→
+     3→import { useMemo, useState } from 'react'
+     4→import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+     5→import {
+     6→  AlertCircle,
+     7→  CalendarClock,
+     8→  CircleCheck,
+     9→  Eye,
+    10→  Landmark,
+    11→  MoreVertical,
+    12→  Pencil,
+    13→  Plus,
+    14→  ReceiptText,
+    15→  Search,
+    16→  Trash2,
+    17→} from 'lucide-react'
+    18→import { Button } from '@/components/ui/button'
+    19→import { Input } from '@/components/ui/input'
+    20→import { Label } from '@/components/ui/label'
+    21→import { Textarea } from '@/components/ui/textarea'
+    22→import { Skeleton } from '@/components/ui/skeleton'
+    23→import { Card, CardContent } from '@/components/ui/card'
+    24→import {
+    25→  Dialog,
+    26→  DialogContent,
+    27→  DialogDescription,
+    28→  DialogFooter,
+    29→  DialogHeader,
+    30→  DialogTitle,
+    31→} from '@/components/ui/dialog'
+    32→import {
+    33→  AlertDialog,
+    34→  AlertDialogAction,
+    35→  AlertDialogCancel,
+    36→  AlertDialogContent,
+    37→  AlertDialogDescription,
+    38→  AlertDialogFooter,
+    39→  AlertDialogHeader,
+    40→  AlertDialogTitle,
+    41→} from '@/components/ui/alert-dialog'
+    42→import {
+    43→  DropdownMenu,
+    44→  DropdownMenuContent,
+    45→  DropdownMenuItem,
+    46→  DropdownMenuSeparator,
+    47→  DropdownMenuTrigger,
+    48→} from '@/components/ui/dropdown-menu'
+    49→import {
+    50→  Select,
+    51→  SelectContent,
+    52→  SelectItem,
+    53→  SelectTrigger,
+    54→  SelectValue,
+    55→} from '@/components/ui/select'
+    56→import {
+    57→  Table,
+    58→  TableBody,
+    59→  TableCell,
+    60→  TableHead,
+    61→  TableHeader,
+    62→  TableRow,
+    63→} from '@/components/ui/table'
+    64→import { get, post, put, del } from '@/components/erp/lib/api'
+    65→import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
+    66→import { DocStatusBadge } from '@/components/erp/shared/status-badge'
+    67→import { StatCard } from '@/components/erp/shared/stat-card'
+    68→import { formatDate, formatMoney, toDateInput } from '@/components/erp/shared/format'
+    69→import { useToast } from '@/hooks/use-toast'
+    70→
+    71→// ---------------------------------------------------------------------------
+    72→// Types (mirroring API payloads)
+    73→// ---------------------------------------------------------------------------
+    74→interface ThirdPartyLite {
+    75→  id: string
+    76→  name: string
+    77→  code: string
+    78→  type?: string
+    79→  status?: string
+    80→}
+    81→
+    82→interface PurchaseOrderLite {
+    83→  id: string
+    84→  ref: string
+    85→  status: string
+    86→  total: number
+    87→  thirdParty: { id: string; name: string; code: string }
+    88→}
+    89→
+    90→interface PaymentLite {
+    91→  id: string
+    92→  amount: number
+    93→  method: string
+    94→  date: string
+    95→  reference: string | null
+    96→  note: string | null
+    97→  bankAccountId: string | null
+    98→}
+    99→
+   100→interface SupplierInvoice {
+   101→  id: string
+   102→  ref: string
+   103→  status: string
+   104→  date: string
+   105→  dueDate: string | null
+   106→  subtotal: number
+   107→  vatTotal: number
+   108→  total: number
+   109→  paidAmount: number
+   110→  notes: string | null
+   111→  thirdParty: ThirdPartyLite
+   112→  purchaseOrder?: { id: string; ref: string } | null
+   113→  payments?: PaymentLite[]
+   114→}
+   115→
+   116→interface BankAccountLite {
+   117→  id: string
+   118→  name: string
+   119→  currentBalance: number
+   120→  type: string
+   121→}
+   122→
+   123→const STATUS_OPTIONS = [
+   124→  { value: 'DRAFT', label: 'Draft' },
+   125→  { value: 'UNPAID', label: 'Unpaid' },
+   126→  { value: 'PARTIAL', label: 'Partially paid' },
+   127→  { value: 'PAID', label: 'Paid' },
+   128→  { value: 'CANCELLED', label: 'Cancelled' },
+   129→] as const
+   130→
+   131→const PAYMENT_METHODS = [
+   132→  { value: 'BANK_TRANSFER', label: 'Bank transfer' },
+   133→  { value: 'CASH', label: 'Cash' },
+   134→  { value: 'CARD', label: 'Card' },
+   135→  { value: 'CHECK', label: 'Check' },
+   136→  { value: 'OTHER', label: 'Other' },
+   137→] as const
+   138→
+   139→const NO_PO = '__none__'
+   140→const NO_BANK = '__none__'
+   141→
+   142→function round2(n: number): number {
+   143→  return Math.round(n * 100) / 100
+   144→}
+   145→
+   146→function isOverdue(inv: SupplierInvoice, now = Date.now()): boolean {
+   147→  return (
+   148→    ['UNPAID', 'PARTIAL'].includes(inv.status) &&
+   149→    !!inv.dueDate &&
+   150→    new Date(inv.dueDate).getTime() < now
+   151→  )
+   152→}
+   153→
+   154→// ---------------------------------------------------------------------------
+   155→// Create / Edit dialog — totals entered directly (no line items)
+   156→// ---------------------------------------------------------------------------
+   157→function SIFormInner({
+   158→  editInvoice,
+   159→  suppliers,
+   160→  receivedOrders,
+   161→  saving,
+   162→  onSubmit,
+   163→  onCancel,
+   164→}: {
+   165→  editInvoice: SupplierInvoice | null
+   166→  suppliers: ThirdPartyLite[]
+   167→  receivedOrders: PurchaseOrderLite[]
+   168→  saving: boolean
+   169→  onSubmit: (payload: unknown) => void
+   170→  onCancel: () => void
+   171→}) {
+   172→  const [supplierId, setSupplierId] = useState(editInvoice?.thirdParty.id ?? '')
+   173→  const [date, setDate] = useState(editInvoice ? toDateInput(editInvoice.date) : toDateInput(new Date()))
+   174→  const [dueDate, setDueDate] = useState(editInvoice?.dueDate ? toDateInput(editInvoice.dueDate) : '')
+   175→  const [subtotal, setSubtotal] = useState(editInvoice ? String(editInvoice.subtotal) : '0')
+   176→  const [vatTotal, setVatTotal] = useState(editInvoice ? String(editInvoice.vatTotal) : '0')
+   177→  const [purchaseOrderId, setPurchaseOrderId] = useState(editInvoice?.purchaseOrder?.id ?? NO_PO)
+   178→  const [notes, setNotes] = useState(editInvoice?.notes ?? '')
+   179→
+   180→  const nSubtotal = Number(subtotal) || 0
+   181→  const nVat = Number(vatTotal) || 0
+   182→  const computedTotal = round2(nSubtotal + nVat)
+   183→  const invalid = !supplierId || nSubtotal < 0 || nVat < 0
+   184→
+   185→  const submit = () => {
+   186→    if (!supplierId) return
+   187→    onSubmit({
+   188→      thirdPartyId: supplierId,
+   189→      date: date || undefined,
+   190→      dueDate: dueDate || null,
+   191→      subtotal: nSubtotal,
+   192→      vatTotal: nVat,
+   193→      notes: notes || null,
+   194→      purchaseOrderId: purchaseOrderId === NO_PO ? null : purchaseOrderId,
+   195→    })
+   196→  }
+   197→
+   198→  return (
+   199→    <>
+   200→      <div className="space-y-4">
+   201→        <div className="grid gap-3 sm:grid-cols-2">
+   202→          <div className="space-y-1.5">
+   203→            <Label htmlFor="si-supplier">Supplier *</Label>
+   204→            <Select value={supplierId} onValueChange={setSupplierId}>
+   205→              <SelectTrigger id="si-supplier" aria-label="Supplier" className="min-h-[40px]">
+   206→                <SelectValue placeholder="Select supplier" />
+   207→              </SelectTrigger>
+   208→              <SelectContent>
+   209→                {suppliers.map((s) => (
+   210→                  <SelectItem key={s.id} value={s.id}>
+   211→                    {s.name}
+   212→                  </SelectItem>
+   213→                ))}
+   214→              </SelectContent>
+   215→            </Select>
+   216→          </div>
+   217→          <div className="space-y-1.5">
+   218→            <Label htmlFor="si-po">Linked purchase order</Label>
+   219→            <Select value={purchaseOrderId} onValueChange={setPurchaseOrderId}>
+   220→              <SelectTrigger id="si-po" aria-label="Linked purchase order" className="min-h-[40px]">
+   221→                <SelectValue placeholder="None" />
+   222→              </SelectTrigger>
+   223→              <SelectContent>
+   224→                <SelectItem value={NO_PO}>None</SelectItem>
+   225→                {receivedOrders.map((o) => (
+   226→                  <SelectItem key={o.id} value={o.id}>
+   227→                    {o.ref} — {o.thirdParty.name} ({formatMoney(o.total)})
+   228→                  </SelectItem>
+   229→                ))}
+   230→              </SelectContent>
+   231→            </Select>
+   232→          </div>
+   233→          <div className="space-y-1.5">
+   234→            <Label htmlFor="si-date">Invoice date</Label>
+   235→            <Input id="si-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+   236→          </div>
+   237→          <div className="space-y-1.5">
+   238→            <Label htmlFor="si-due">Payment due</Label>
+   239→            <Input id="si-due" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+   240→          </div>
+   241→          <div className="space-y-1.5">
+   242→            <Label htmlFor="si-subtotal">Subtotal (net) *</Label>
+   243→            <Input
+   244→              id="si-subtotal"
+   245→              type="number"
+   246→              min="0"
+   247→              step="0.01"
+   248→              value={subtotal}
+   249→              onChange={(e) => setSubtotal(e.target.value)}
+   250→            />
+   251→          </div>
+   252→          <div className="space-y-1.5">
+   253→            <Label htmlFor="si-vat">VAT total *</Label>
+   254→            <Input
+   255→              id="si-vat"
+   256→              type="number"
+   257→              min="0"
+   258→              step="0.01"
+   259→              value={vatTotal}
+   260→              onChange={(e) => setVatTotal(e.target.value)}
+   261→            />
+   262→          </div>
+   263→        </div>
+   264→
+   265→        <div className="flex items-center justify-between rounded-md border bg-muted/40 px-4 py-3">
+   266→          <span className="text-sm text-muted-foreground">Total (subtotal + VAT)</span>
+   267→          <span className="text-lg font-bold tabular-nums text-primary">{formatMoney(computedTotal)}</span>
+   268→        </div>
+   269→
+   270→        <div className="space-y-1.5">
+   271→          <Label htmlFor="si-notes">Notes</Label>
+   272→          <Textarea id="si-notes" rows={2} placeholder="Internal notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
+   273→        </div>
+   274→      </div>
+   275→
+   276→      <DialogFooter className="gap-2">
+   277→        <Button variant="outline" onClick={onCancel}>Cancel</Button>
+   278→        <Button onClick={submit} disabled={saving || invalid} className="min-h-[40px] min-w-[120px]">
+   279→          {saving ? 'Saving…' : editInvoice ? 'Save changes' : 'Create draft'}
+   280→        </Button>
+   281→      </DialogFooter>
+   282→    </>
+   283→  )
+   284→}
+   285→
+   286→function SIFormDialog({
+   287→  open,
+   288→  onOpenChange,
+   289→  suppliers,
+   290→  receivedOrders,
+   291→  editId,
+   292→  editInvoice,
+   293→  toast,
+   294→}: {
+   295→  open: boolean
+   296→  onOpenChange: (o: boolean) => void
+   297→  suppliers: ThirdPartyLite[]
+   298→  receivedOrders: PurchaseOrderLite[]
+   299→  editId: string | null
+   300→  editInvoice: SupplierInvoice | null
+   301→  toast: ReturnType<typeof useToast>['toast']
+   302→}) {
+   303→  const queryClient = useQueryClient()
+   304→
+   305→  const saveMutation = useMutation({
+   306→    mutationFn: (payload: unknown) =>
+   307→      editId
+   308→        ? put<SupplierInvoice>(`/api/supplier-invoices/${editId}`, payload)
+   309→        : post<SupplierInvoice>('/api/supplier-invoices', payload),
+   310→    onSuccess: (saved) => {
+   311→      queryClient.invalidateQueries({ queryKey: ['supplier-invoices'] })
+   312→      if (editId) queryClient.invalidateQueries({ queryKey: ['supplier-invoice', editId] })
+   313→      toast({ title: editId ? 'Supplier invoice updated' : 'Supplier invoice created', description: saved.ref })
+   314→      onOpenChange(false)
+   315→    },
+   316→    onError: (e: Error) =>
+   317→      toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
+   318→  })
+   319→
+   320→  const loadingEdit = !!editId && !editInvoice
+   321→
+   322→  return (
+   323→    <Dialog open={open} onOpenChange={onOpenChange}>
+   324→      <DialogContent className="max-h-[70vh] overflow-y-auto sm:max-w-2xl">
+   325→        <DialogHeader>
+   326→          <DialogTitle>{editId ? `Edit ${editInvoice?.ref ?? 'supplier invoice'}` : 'New supplier invoice'}</DialogTitle>
+   327→          <DialogDescription>
+   328→            {editId
+   329→              ? 'Draft supplier invoices only — totals are recomputed on save.'
+   330→              : 'Enter the invoice totals directly (no line items).'}
+   331→          </DialogDescription>
+   332→        </DialogHeader>
+   333→
+   334→        {loadingEdit ? (
+   335→          <div className="space-y-3 py-6">
+   336→            <Skeleton className="h-10 w-full" />
+   337→            <Skeleton className="h-10 w-2/3" />
+   338→            <Skeleton className="h-10 w-full" />
+   339→          </div>
+   340→        ) : (
+   341→          <SIFormInner
+   342→            key={editId ?? 'new'}
+   343→            editInvoice={editInvoice}
+   344→            suppliers={suppliers}
+   345→            receivedOrders={receivedOrders}
+   346→            saving={saveMutation.isPending}
+   347→            onSubmit={(payload) => saveMutation.mutate(payload)}
+   348→            onCancel={() => onOpenChange(false)}
+   349→          />
+   350→        )}
+   351→      </DialogContent>
+   352→    </Dialog>
+   353→  )
+   354→}
+   355→
+   356→// ---------------------------------------------------------------------------
+   357→// Record payment dialog — posts to /api/payments (contract by agent 6-c)
+   358→// ---------------------------------------------------------------------------
+   359→function PaymentDialog({
+   360→  invoice,
+   361→  bankAccounts,
+   362→  open,
+   363→  onOpenChange,
+   364→  toast,
+   365→}: {
+   366→  invoice: SupplierInvoice
+   367→  bankAccounts: BankAccountLite[]
+   368→  open: boolean
+   369→  onOpenChange: (o: boolean) => void
+   370→  toast: ReturnType<typeof useToast>['toast']
+   371→}) {
+   372→  const queryClient = useQueryClient()
+   373→  const remaining = round2(invoice.total - invoice.paidAmount)
+   374→  const [amount, setAmount] = useState(String(remaining))
+   375→  const [method, setMethod] = useState('BANK_TRANSFER')
+   376→  const [date, setDate] = useState(toDateInput(new Date()))
+   377→  const [reference, setReference] = useState('')
+   378→  const [bankAccountId, setBankAccountId] = useState(NO_BANK)
+   379→  const [note, setNote] = useState('')
+   380→
+   381→  const payMutation = useMutation({
+   382→    mutationFn: (payload: unknown) => post<PaymentLite>('/api/payments', payload),
+   383→    onSuccess: () => {
+   384→      queryClient.invalidateQueries({ queryKey: ['supplier-invoices'] })
+   385→      queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoice.id] })
+   386→      toast({ title: 'Payment recorded', description: `${formatMoney(Number(amount))} applied to ${invoice.ref}` })
+   387→      onOpenChange(false)
+   388→    },
+   389→    onError: (e: Error) =>
+   390→      toast({ title: 'Payment failed', description: e.message, variant: 'destructive' }),
+   391→  })
+   392→
+   393→  const submit = () => {
+   394→    const nAmount = Number(amount)
+   395→    if (!Number.isFinite(nAmount) || nAmount <= 0) {
+   396→      toast({ title: 'Invalid amount', description: 'Payment amount must be greater than 0.', variant: 'destructive' })
+   397→      return
+   398→    }
+   399→    payMutation.mutate({
+   400→      supplierInvoiceId: invoice.id,
+   401→      amount: nAmount,
+   402→      method,
+   403→      date: date || undefined,
+   404→      reference: reference || undefined,
+   405→      note: note || undefined,
+   406→      bankAccountId: bankAccountId === NO_BANK ? undefined : bankAccountId,
+   407→    })
+   408→  }
+   409→
+   410→  return (
+   411→    <Dialog open={open} onOpenChange={onOpenChange}>
+   412→      <DialogContent className="max-h-[70vh] overflow-y-auto sm:max-w-lg">
+   413→        <DialogHeader>
+   414→          <DialogTitle>Record payment — {invoice.ref}</DialogTitle>
+   415→          <DialogDescription>
+   416→            {invoice.thirdParty.name} · Total {formatMoney(invoice.total)} · Remaining{' '}
+   417→            <span className="font-semibold text-primary">{formatMoney(remaining)}</span>
+   418→          </DialogDescription>
+   419→        </DialogHeader>
+   420→        <div className="grid gap-3 sm:grid-cols-2">
+   421→          <div className="space-y-1.5">
+   422→            <Label htmlFor="pay-amount">Amount *</Label>
+   423→            <Input
+   424→              id="pay-amount"
+   425→              type="number"
+   426→              min="0"
+   427→              step="0.01"
+   428→              value={amount}
+   429→              onChange={(e) => setAmount(e.target.value)}
+   430→            />
+   431→          </div>
+   432→          <div className="space-y-1.5">
+   433→            <Label htmlFor="pay-method">Method *</Label>
+   434→            <Select value={method} onValueChange={setMethod}>
+   435→              <SelectTrigger id="pay-method" aria-label="Payment method" className="min-h-[40px]">
+   436→                <SelectValue />
+   437→              </SelectTrigger>
+   438→              <SelectContent>
+   439→                {PAYMENT_METHODS.map((m) => (
+   440→                  <SelectItem key={m.value} value={m.value}>
+   441→                    {m.label}
+   442→                  </SelectItem>
+   443→                ))}
+   444→              </SelectContent>
+   445→            </Select>
+   446→          </div>
+   447→          <div className="space-y-1.5">
+   448→            <Label htmlFor="pay-date">Payment date</Label>
+   449→            <Input id="pay-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+   450→          </div>
+   451→          <div className="space-y-1.5">
+   452→            <Label htmlFor="pay-ref">Reference</Label>
+   453→            <Input id="pay-ref" placeholder="e.g. TRX-99120" value={reference} onChange={(e) => setReference(e.target.value)} />
+   454→          </div>
+   455→          <div className="space-y-1.5 sm:col-span-2">
+   456→            <Label htmlFor="pay-bank">Bank account (optional)</Label>
+   457→            <Select value={bankAccountId} onValueChange={setBankAccountId}>
+   458→              <SelectTrigger id="pay-bank" aria-label="Bank account" className="min-h-[40px]">
+   459→                <SelectValue placeholder="None" />
+   460→              </SelectTrigger>
+   461→              <SelectContent>
+   462→                <SelectItem value={NO_BANK}>None</SelectItem>
+   463→                {bankAccounts.map((b) => (
+   464→                  <SelectItem key={b.id} value={b.id}>
+   465→                    {b.name}
+   466→                  </SelectItem>
+   467→                ))}
+   468→              </SelectContent>
+   469→            </Select>
+   470→            {bankAccounts.length === 0 && (
+   471→              <p className="text-xs text-muted-foreground">No bank accounts available.</p>
+   472→            )}
+   473→          </div>
+   474→          <div className="space-y-1.5 sm:col-span-2">
+   475→            <Label htmlFor="pay-note">Note</Label>
+   476→            <Input id="pay-note" placeholder="Optional note" value={note} onChange={(e) => setNote(e.target.value)} />
+   477→          </div>
+   478→        </div>
+   479→        <DialogFooter className="gap-2">
+   480→          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+   481→          <Button onClick={submit} disabled={payMutation.isPending} className="min-h-[40px] min-w-[140px]">
+   482→            {payMutation.isPending ? 'Recording…' : 'Record payment'}
+   483→          </Button>
+   484→        </DialogFooter>
+   485→      </DialogContent>
+   486→    </Dialog>
+   487→  )
+   488→}
+   489→
+   490→// ---------------------------------------------------------------------------
+   491→// Detail dialog — meta + totals + payments + actions
+   492→// ---------------------------------------------------------------------------
+   493→function SIDetailDialog({
+   494→  invoice,
+   495→  isLoading,
+   496→  open,
+   497→  onOpenChange,
+   498→  onAction,
+   499→  onEdit,
+   500→  onPay,
+   501→}: {
+   502→  invoice: SupplierInvoice | null
+   503→  isLoading: boolean
+   504→  open: boolean
+   505→  onOpenChange: (o: boolean) => void
+   506→  onAction: (inv: SupplierInvoice, action: 'validate' | 'cancel') => void
+   507→  onEdit: (inv: SupplierInvoice) => void
+   508→  onPay: (inv: SupplierInvoice) => void
+   509→}) {
+   510→  return (
+   511→    <Dialog open={open} onOpenChange={onOpenChange}>
+   512→      <DialogContent className="max-h-[70vh] overflow-y-auto sm:max-w-2xl">
+   513→        <DialogHeader>
+   514→          <DialogTitle className="flex items-center gap-2">
+   515→            <span className="font-mono text-primary">{invoice?.ref ?? '…'}</span>
+   516→            {invoice && <DocStatusBadge status={invoice.status} />}
+   517→          </DialogTitle>
+   518→          <DialogDescription>Supplier invoice details</DialogDescription>
+   519→        </DialogHeader>
+   520→
+   521→        {isLoading || !invoice ? (
+   522→          <div className="space-y-3 py-6">
+   523→            <Skeleton className="h-10 w-full" />
+   524→            <Skeleton className="h-24 w-full" />
+   525→          </div>
+   526→        ) : (
+   527→          <div className="space-y-4">
+   528→            <div className="grid gap-x-6 gap-y-2 rounded-md border p-3 text-sm sm:grid-cols-2">
+   529→              <div>
+   530→                <p className="text-xs uppercase tracking-wide text-muted-foreground">Supplier</p>
+   531→                <p className="font-medium">{invoice.thirdParty.name}</p>
+   532→                <p className="font-mono text-xs text-muted-foreground">{invoice.thirdParty.code}</p>
+   533→              </div>
+   534→              <div>
+   535→                <p className="text-xs uppercase tracking-wide text-muted-foreground">Linked purchase order</p>
+   536→                <p className="font-medium font-mono">{invoice.purchaseOrder?.ref ?? '—'}</p>
+   537→              </div>
+   538→              <div>
+   539→                <p className="text-xs uppercase tracking-wide text-muted-foreground">Invoice date</p>
+   540→                <p className="font-medium">{formatDate(invoice.date)}</p>
+   541→              </div>
+   542→              <div>
+   543→                <p className="text-xs uppercase tracking-wide text-muted-foreground">Payment due</p>
+   544→                <p className="font-medium">
+   545→                  {formatDate(invoice.dueDate)}
+   546→                  {isOverdue(invoice) && (
+   547→                    <span className="ml-2 inline-block rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700">
+   548→                      Overdue
+   549→                    </span>
+   550→                  )}
+   551→                </p>
+   552→              </div>
+   553→              {invoice.notes && (
+   554→                <div className="sm:col-span-2">
+   555→                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Notes</p>
+   556→                  <p className="whitespace-pre-wrap">{invoice.notes}</p>
+   557→                </div>
+   558→              )}
+   559→            </div>
+   560→
+   561→            <div className="space-y-1.5 rounded-md border bg-muted/40 p-3 text-sm">
+   562→              <div className="flex justify-between">
+   563→                <span className="text-muted-foreground">Subtotal</span>
+   564→                <span className="tabular-nums">{formatMoney(invoice.subtotal)}</span>
+   565→              </div>
+   566→              <div className="flex justify-between">
+   567→                <span className="text-muted-foreground">VAT</span>
+   568→                <span className="tabular-nums">{formatMoney(invoice.vatTotal)}</span>
+   569→              </div>
+   570→              <div className="flex justify-between border-t pt-1.5 text-base font-bold">
+   571→                <span>Total</span>
+   572→                <span className="tabular-nums">{formatMoney(invoice.total)}</span>
+   573→              </div>
+   574→              <div className="flex justify-between">
+   575→                <span className="text-muted-foreground">Paid</span>
+   576→                <span className="tabular-nums text-emerald-700">{formatMoney(invoice.paidAmount)}</span>
+   577→              </div>
+   578→              <div className="flex justify-between font-semibold">
+   579→                <span className="text-muted-foreground">Remaining</span>
+   580→                <span className="tabular-nums text-primary">{formatMoney(round2(invoice.total - invoice.paidAmount))}</span>
+   581→              </div>
+   582→            </div>
+   583→
+   584→            <div>
+   585→              <p className="mb-2 text-sm font-semibold">Payments</p>
+   586→              {invoice.payments && invoice.payments.length > 0 ? (
+   587→                <div className="overflow-hidden rounded-md border">
+   588→                  <Table>
+   589→                    <TableHeader>
+   590→                      <TableRow>
+   591→                        <TableHead>Date</TableHead>
+   592→                        <TableHead>Method</TableHead>
+   593→                        <TableHead>Reference</TableHead>
+   594→                        <TableHead className="text-right">Amount</TableHead>
+   595→                      </TableRow>
+   596→                    </TableHeader>
+   597→                    <TableBody>
+   598→                      {invoice.payments.map((p) => (
+   599→                        <TableRow key={p.id}>
+   600→                          <TableCell className="whitespace-nowrap">{formatDate(p.date)}</TableCell>
+   601→                          <TableCell className="capitalize">{p.method.replaceAll('_', ' ').toLowerCase()}</TableCell>
+   602→                          <TableCell className="font-mono text-xs">{p.reference ?? '—'}</TableCell>
+   603→                          <TableCell className="text-right tabular-nums">{formatMoney(p.amount)}</TableCell>
+   604→                        </TableRow>
+   605→                      ))}
+   606→                    </TableBody>
+   607→                  </Table>
+   608→                </div>
+   609→              ) : (
+   610→                <p className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+   611→                  No payments recorded yet.
+   612→                </p>
+   613→              )}
+   614→            </div>
+   615→
+   616→            <div className="flex flex-wrap gap-2 border-t pt-3">
+   617→              {invoice.status === 'DRAFT' && (
+   618→                <>
+   619→                  <Button size="sm" className="min-h-[40px]" onClick={() => onAction(invoice, 'validate')}>
+   620→                    <CircleCheck className="h-4 w-4" /> Validate
+   621→                  </Button>
+   622→                  <Button size="sm" variant="outline" className="min-h-[40px]" onClick={() => onEdit(invoice)}>
+   623→                    <Pencil className="h-4 w-4" /> Edit
+   624→                  </Button>
+   625→                </>
+   626→              )}
+   627→              {['UNPAID', 'PARTIAL'].includes(invoice.status) && (
+   628→                <Button size="sm" className="min-h-[40px]" onClick={() => onPay(invoice)}>
+   629→                  <Landmark className="h-4 w-4" /> Record payment
+   630→                </Button>
+   631→              )}
+   632→              {['DRAFT', 'UNPAID', 'PARTIAL'].includes(invoice.status) && (
+   633→                <Button
+   634→                  size="sm"
+   635→                  variant="outline"
+   636→                  className="min-h-[40px] text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+   637→                  onClick={() => onAction(invoice, 'cancel')}
+   638→                >
+   639→                  Cancel invoice
+   640→                </Button>
+   641→              )}
+   642→            </div>
+   643→          </div>
+   644→        )}
+   645→      </DialogContent>
+   646→    </Dialog>
+   647→  )
+   648→}
+   649→
+   650→// ---------------------------------------------------------------------------
+   651→// Module
+   652→// ---------------------------------------------------------------------------
+   653→export default function SupplierInvoicesModule() {
+   654→  const { toast } = useToast()
+   655→  const queryClient = useQueryClient()
+   656→
+   657→  const [search, setSearch] = useState('')
+   658→  const [statusFilter, setStatusFilter] = useState('ALL')
+   659→  const [detailId, setDetailId] = useState<string | null>(null)
+   660→  const [detailOpen, setDetailOpen] = useState(false)
+   661→  const [formOpen, setFormOpen] = useState(false)
+   662→  const [editId, setEditId] = useState<string | null>(null)
+   663→  const [payInvoice, setPayInvoice] = useState<SupplierInvoice | null>(null)
+   664→
+   665→  // ---- Data ---------------------------------------------------------------
+   666→  const listQuery = useQuery({
+   667→    queryKey: ['supplier-invoices'],
+   668→    queryFn: () => get<SupplierInvoice[]>('/api/supplier-invoices'),
+   669→  })
+   670→
+   671→  const suppliersQuery = useQuery({
+   672→    queryKey: ['third-parties', 'suppliers'],
+   673→    queryFn: () => get<ThirdPartyLite[]>('/api/third-parties'),
+   674→  })
+   675→
+   676→  const receivedQuery = useQuery({
+   677→    queryKey: ['purchase-orders', 'received'],
+   678→    queryFn: () => get<PurchaseOrderLite[]>('/api/purchase-orders?status=RECEIVED'),
+   679→  })
+   680→
+   681→  // Bank accounts — fail silently and omit the list if unavailable.
+   682→  const bankQuery = useQuery({
+   683→    queryKey: ['bank-accounts'],
+   684→    queryFn: async () => {
+   685→      try {
+   686→        const res = await get<{ accounts?: BankAccountLite[] } | BankAccountLite[]>('/api/bank')
+   687→        return Array.isArray(res) ? res : (res.accounts ?? [])
+   688→      } catch {
+   689→        return [] as BankAccountLite[]
+   690→      }
+   691→    },
+   692→    retry: false,
+   693→  })
+   694→
+   695→  const detailQuery = useQuery({
+   696→    queryKey: ['supplier-invoice', detailId],
+   697→    queryFn: () => get<SupplierInvoice>(`/api/supplier-invoices/${detailId}`),
+   698→    enabled: !!detailId,
+   699→  })
+   700→
+   701→  const suppliers = useMemo(
+   702→    () =>
+   703→      (suppliersQuery.data ?? []).filter(
+   704→        (t) => ['SUPPLIER', 'CUSTOMER_SUPPLIER'].includes(t.type ?? '') && t.status !== 'SUSPENDED'
+   705→      ),
+   706→    [suppliersQuery.data]
+   707→  )
+   708→  const bankAccounts = bankQuery.data ?? []
+   709→  const invoices = listQuery.data ?? []
+   710→
+   711→  const filtered = useMemo(() => {
+   712→    const q = search.trim().toLowerCase()
+   713→    return invoices.filter((inv) => {
+   714→      if (statusFilter !== 'ALL' && inv.status !== statusFilter) return false
+   715→      if (!q) return true
+   716→      return (
+   717→        inv.ref.toLowerCase().includes(q) ||
+   718→        inv.thirdParty.name.toLowerCase().includes(q) ||
+   719→        (inv.purchaseOrder?.ref.toLowerCase().includes(q) ?? false)
+   720→      )
+   721→    })
+   722→  }, [invoices, search, statusFilter])
+   723→
+   724→  // ---- Stats --------------------------------------------------------------
+   725→  const stats = useMemo(() => {
+   726→    const now = Date.now()
+   727→    let unpaidTotal = 0
+   728→    let overdueCount = 0
+   729→    let paidTotal = 0
+   730→    for (const inv of invoices) {
+   731→      if (inv.status === 'UNPAID' || inv.status === 'PARTIAL') {
+   732→        unpaidTotal += inv.total - inv.paidAmount
+   733→        if (inv.dueDate && new Date(inv.dueDate).getTime() < now) overdueCount += 1
+   734→      }
+   735→      if (inv.status !== 'CANCELLED') paidTotal += inv.paidAmount
+   736→    }
+   737→    return { unpaidTotal: round2(unpaidTotal), overdueCount, paidTotal: round2(paidTotal) }
+   738→  }, [invoices])
+   739→
+   740→  // ---- Mutations ----------------------------------------------------------
+   741→  const actMutation = useMutation({
+   742→    mutationFn: ({ id, action }: { id: string; action: 'validate' | 'cancel' }) =>
+   743→      put<SupplierInvoice>(`/api/supplier-invoices/${id}`, { action }),
+   744→    onSuccess: (updated, vars) => {
+   745→      queryClient.invalidateQueries({ queryKey: ['supplier-invoices'] })
+   746→      queryClient.invalidateQueries({ queryKey: ['supplier-invoice'] })
+   747→      toast({
+   748→        title: vars.action === 'validate' ? 'Supplier invoice validated' : 'Supplier invoice cancelled',
+   749→        description: updated.ref,
+   750→      })
+   751→    },
+   752→    onError: (e: Error) =>
+   753→      toast({ title: 'Action failed', description: e.message, variant: 'destructive' }),
+   754→  })
+   755→
+   756→  const deleteMutation = useMutation({
+   757→    mutationFn: (id: string) => del<{ id: string }>(`/api/supplier-invoices/${id}`),
+   758→    onSuccess: (_res, id) => {
+   759→      queryClient.invalidateQueries({ queryKey: ['supplier-invoices'] })
+   760→      queryClient.removeQueries({ queryKey: ['supplier-invoice', id] })
+   761→      toast({ title: 'Supplier invoice deleted' })
+   762→    },
+   763→    onError: (e: Error) =>
+   764→      toast({ title: 'Delete failed', description: e.message, variant: 'destructive' }),
+   765→  })
+   766→
+   767→  // ---- Confirm dialog -----------------------------------------------------
+   768→  interface ConfirmRequest {
+   769→    title: string
+   770→    description: string
+   771→    confirmLabel: string
+   772→    destructive?: boolean
+   773→    onConfirm: () => void
+   774→  }
+   775→  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null)
+   776→
+   777→  const handleAction = (inv: SupplierInvoice, action: 'validate' | 'cancel') => {
+   778→    if (action === 'validate') {
+   779→      setConfirmReq({
+   780→        title: `Validate ${inv.ref}?`,
+   781→        description: 'The supplier invoice will be marked as Unpaid and ready for payments.',
+   782→        confirmLabel: 'Validate',
+   783→        onConfirm: () => actMutation.mutate({ id: inv.id, action: 'validate' }),
+   784→      })
+   785→    } else {
+   786→      setConfirmReq({
+   787→        title: `Cancel ${inv.ref}?`,
+   788→        description: 'The supplier invoice will be cancelled. This cannot be undone.',
+   789→        confirmLabel: 'Cancel invoice',
+   790→        destructive: true,
+   791→        onConfirm: () => actMutation.mutate({ id: inv.id, action: 'cancel' }),
+   792→      })
+   793→    }
+   794→  }
+   795→
+   796→  const handleDelete = (inv: SupplierInvoice) => {
+   797→    setConfirmReq({
+   798→      title: `Delete ${inv.ref}?`,
+   799→      description: 'Only draft supplier invoices can be deleted. This cannot be undone.',
+   800→      confirmLabel: 'Delete',
+   801→      destructive: true,
+   802→      onConfirm: () => deleteMutation.mutate(inv.id),
+   803→    })
+   804→  }
+   805→
+   806→  const openEdit = (inv: SupplierInvoice) => {
+   807→    setEditId(inv.id)
+   808→    setFormOpen(true)
+   809→  }
+   810→  const openCreate = () => {
+   811→    setEditId(null)
+   812→    setFormOpen(true)
+   813→  }
+   814→  const openDetail = (inv: SupplierInvoice) => {
+   815→    setDetailId(inv.id)
+   816→    setDetailOpen(true)
+   817→  }
+   818→
+   819→  const rowActions = (inv: SupplierInvoice) => (
+   820→    <div className="flex items-center justify-end gap-1">
+   821→      <Button
+   822→        variant="ghost"
+   823→        size="icon"
+   824→        className="h-9 w-9"
+   825→        aria-label={`View ${inv.ref}`}
+   826→        onClick={() => openDetail(inv)}
+   827→      >
+   828→        <Eye className="h-4 w-4" />
+   829→      </Button>
+   830→      {inv.status === 'DRAFT' && (
+   831→        <Button variant="ghost" size="icon" className="h-9 w-9" aria-label={`Edit ${inv.ref}`} onClick={() => openEdit(inv)}>
+   832→          <Pencil className="h-4 w-4" />
+   833→        </Button>
+   834→      )}
+   835→      <DropdownMenu>
+   836→        <DropdownMenuTrigger asChild>
+   837→          <Button variant="ghost" size="icon" className="h-9 w-9" aria-label={`More actions for ${inv.ref}`}>
+   838→            <MoreVertical className="h-4 w-4" />
+   839→          </Button>
+   840→        </DropdownMenuTrigger>
+   841→        <DropdownMenuContent align="end">
+   842→          {inv.status === 'DRAFT' && (
+   843→            <DropdownMenuItem onClick={() => handleAction(inv, 'validate')}>
+   844→              <CircleCheck className="h-4 w-4" /> Validate
+   845→            </DropdownMenuItem>
+   846→          )}
+   847→          {['UNPAID', 'PARTIAL'].includes(inv.status) && (
+   848→            <DropdownMenuItem onClick={() => setPayInvoice(inv)}>
+   849→              <Landmark className="h-4 w-4" /> Record payment
+   850→            </DropdownMenuItem>
+   851→          )}
+   852→          {inv.status === 'DRAFT' && (
+   853→            <DropdownMenuItem onClick={() => openEdit(inv)}>
+   854→              <Pencil className="h-4 w-4" /> Edit
+   855→            </DropdownMenuItem>
+   856→          )}
+   857→          {['DRAFT', 'UNPAID', 'PARTIAL'].includes(inv.status) && (
+   858→            <DropdownMenuItem className="text-rose-600 focus:text-rose-700" onClick={() => handleAction(inv, 'cancel')}>
+   859→              <Trash2 className="h-4 w-4" /> Cancel
+   860→            </DropdownMenuItem>
+   861→          )}
+   862→          {inv.status === 'DRAFT' && (
+   863→            <>
+   864→              <DropdownMenuSeparator />
+   865→              <DropdownMenuItem className="text-rose-600 focus:text-rose-700" onClick={() => handleDelete(inv)}>
+   866→                <Trash2 className="h-4 w-4" /> Delete
+   867→              </DropdownMenuItem>
+   868→            </>
+   869→          )}
+   870→        </DropdownMenuContent>
+   871→      </DropdownMenu>
+   872→    </div>
+   873→  )
+   874→
+   875→  return (
+   876→    <div className="space-y-5">
+   877→      <PageHeader
+   878→        title="Supplier Invoices"
+   879→        description="Track supplier bills, due dates and record payments."
+   880→        icon={ReceiptText}
+   881→        actions={
+   882→          <Button onClick={openCreate} className="min-h-[40px]">
+   883→            <Plus className="h-4 w-4" /> New supplier invoice
+   884→          </Button>
+   885→        }
+   886→      />
+   887→
+   888→      {/* Stats */}
+   889→      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+   890→        <StatCard
+   891→          title="Unpaid total"
+   892→          value={stats.unpaidTotal}
+   893→          isMoney
+   894→          hint="Outstanding on unpaid + partial invoices"
+   895→          icon={AlertCircle}
+   896→          tone="warning"
+   897→        />
+   898→        <StatCard
+   899→          title="Overdue invoices"
+   900→          value={stats.overdueCount}
+   901→          hint="Due date passed, not fully paid"
+   902→          icon={CalendarClock}
+   903→          tone="danger"
+   904→        />
+   905→        <StatCard
+   906→          title="Total paid"
+   907→          value={stats.paidTotal}
+   908→          isMoney
+   909→          hint="Payments applied to supplier invoices"
+   910→          icon={CircleCheck}
+   911→          tone="success"
+   912→        />
+   913→      </div>
+   914→
+   915→      {/* Toolbar + table */}
+   916→      <Card className="py-0 gap-0">
+   917→        <CardContent className="p-4 sm:p-6">
+   918→          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+   919→            <div className="relative w-full sm:max-w-xs">
+   920→              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+   921→              <Input
+   922→                className="min-h-[40px] pl-9"
+   923→                placeholder="Search ref, supplier or PO…"
+   924→                aria-label="Search supplier invoices"
+   925→                value={search}
+   926→                onChange={(e) => setSearch(e.target.value)}
+   927→              />
+   928→            </div>
+   929→            <Select value={statusFilter} onValueChange={setStatusFilter}>
+   930→              <SelectTrigger className="w-full sm:w-44" aria-label="Filter by status">
+   931→                <SelectValue />
+   932→              </SelectTrigger>
+   933→              <SelectContent>
+   934→                <SelectItem value="ALL">All statuses</SelectItem>
+   935→                {STATUS_OPTIONS.map((s) => (
+   936→                  <SelectItem key={s.value} value={s.value}>
+   937→                    {s.label}
+   938→                  </SelectItem>
+   939→                ))}
+   940→              </SelectContent>
+   941→            </Select>
+   942→          </div>
+   943→
+   944→          {listQuery.isLoading ? (
+   945→            <div className="space-y-2">
+   946→              {Array.from({ length: 5 }).map((_, i) => (
+   947→                <Skeleton key={i} className="h-12 w-full" />
+   948→              ))}
+   949→            </div>
+   950→          ) : filtered.length === 0 ? (
+   951→            <EmptyState
+   952→              icon={ReceiptText}
+   953→              title="No supplier invoices"
+   954→              description={invoices.length === 0 ? 'Record your first supplier bill to track what you owe.' : 'No invoices match your filters.'}
+   955→              actionLabel={invoices.length === 0 ? 'New supplier invoice' : undefined}
+   956→              onAction={invoices.length === 0 ? openCreate : undefined}
+   957→            />
+   958→          ) : (
+   959→            <div className="overflow-x-auto">
+   960→              <Table className="min-w-[980px]">
+   961→                <TableHeader>
+   962→                  <TableRow>
+   963→                    <TableHead>Ref</TableHead>
+   964→                    <TableHead>Date</TableHead>
+   965→                    <TableHead>Due</TableHead>
+   966→                    <TableHead>Supplier</TableHead>
+   967→                    <TableHead>PO</TableHead>
+   968→                    <TableHead className="text-right">Total</TableHead>
+   969→                    <TableHead className="text-right">Paid</TableHead>
+   970→                    <TableHead>Status</TableHead>
+   971→                    <TableHead className="text-right">Actions</TableHead>
+   972→                  </TableRow>
+   973→                </TableHeader>
+   974→                <TableBody>
+   975→                  {filtered.map((inv) => (
+   976→                    <TableRow key={inv.id}>
+   977→                      <TableCell className="font-mono text-sm font-semibold text-primary">{inv.ref}</TableCell>
+   978→                      <TableCell className="whitespace-nowrap">{formatDate(inv.date)}</TableCell>
+   979→                      <TableCell className="whitespace-nowrap">
+   980→                        {formatDate(inv.dueDate)}
+   981→                        {isOverdue(inv) && (
+   982→                          <span className="ml-2 inline-block rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700">
+   983→                            Overdue
+   984→                          </span>
+   985→                        )}
+   986→                      </TableCell>
+   987→                      <TableCell className="font-medium">{inv.thirdParty.name}</TableCell>
+   988→                      <TableCell className="font-mono text-xs text-muted-foreground">
+   989→                        {inv.purchaseOrder?.ref ?? '—'}
+   990→                      </TableCell>
+   991→                      <TableCell className="text-right font-semibold tabular-nums">{formatMoney(inv.total)}</TableCell>
+   992→                      <TableCell className="text-right tabular-nums text-emerald-700">
+   993→                        {formatMoney(inv.paidAmount)}
+   994→                      </TableCell>
+   995→                      <TableCell>
+   996→                        <DocStatusBadge status={inv.status} />
+   997→                      </TableCell>
+   998→                      <TableCell>{rowActions(inv)}</TableCell>
+   999→                    </TableRow>
+  1000→                  ))}
+  1001→                </TableBody>
+  1002→              </Table>
+  1003→            </div>
+  1004→          )}
+  1005→        </CardContent>
+  1006→      </Card>
+  1007→
+  1008→      {/* Create / edit */}
+  1009→      <SIFormDialog
+  1010→        open={formOpen}
+  1011→        onOpenChange={setFormOpen}
+  1012→        suppliers={suppliers}
+  1013→        receivedOrders={receivedQuery.data ?? []}
+  1014→        editId={editId}
+  1015→        editInvoice={editId ? (detailQuery.data ?? null) : null}
+  1016→        toast={toast}
+  1017→      />
+  1018→
+  1019→      {/* Detail */}
+  1020→      <SIDetailDialog
+  1021→        open={detailOpen}
+  1022→        onOpenChange={setDetailOpen}
+  1023→        invoice={detailQuery.data ?? null}
+  1024→        isLoading={detailQuery.isLoading}
+  1025→        onAction={handleAction}
+  1026→        onEdit={(inv) => {
+  1027→          setDetailOpen(false)
+  1028→          openEdit(inv)
+  1029→        }}
+  1030→        onPay={(inv) => setPayInvoice(inv)}
+  1031→      />
+  1032→
+  1033→      {/* Record payment */}
+  1034→      {payInvoice && (
+  1035→        <PaymentDialog
+  1036→          key={payInvoice.id}
+  1037→          invoice={payInvoice}
+  1038→          bankAccounts={bankAccounts}
+  1039→          open={!!payInvoice}
+  1040→          onOpenChange={(o) => !o && setPayInvoice(null)}
+  1041→          toast={toast}
+  1042→        />
+  1043→      )}
+  1044→
+  1045→      {/* Confirm */}
+  1046→      <AlertDialog open={!!confirmReq} onOpenChange={(o) => !o && setConfirmReq(null)}>
+  1047→        <AlertDialogContent>
+  1048→          <AlertDialogHeader>
+  1049→            <AlertDialogTitle>{confirmReq?.title}</AlertDialogTitle>
+  1050→            <AlertDialogDescription>{confirmReq?.description}</AlertDialogDescription>
+  1051→          </AlertDialogHeader>
+  1052→          <AlertDialogFooter>
+  1053→            <AlertDialogCancel>Cancel</AlertDialogCancel>
+  1054→            <AlertDialogAction
+  1055→              className={confirmReq?.destructive ? 'bg-rose-600 text-white hover:bg-rose-700' : ''}
+  1056→              onClick={() => {
+  1057→                confirmReq?.onConfirm()
+  1058→                setConfirmReq(null)
+  1059→              }}
+  1060→            >
+  1061→              {confirmReq?.confirmLabel}
+  1062→            </AlertDialogAction>
+  1063→          </AlertDialogFooter>
+  1064→        </AlertDialogContent>
+  1065→      </AlertDialog>
+  1066→    </div>
+  1067→  )
+  1068→}
+  1069→

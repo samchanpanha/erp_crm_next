@@ -6,11 +6,13 @@ import {
   ArrowRightLeft,
   Ban,
   CheckCircle2,
+  Copy,
   Eye,
   MoreHorizontal,
   PackageCheck,
   Pencil,
   Plus,
+  Printer,
   ShoppingCart,
   Trash2,
   Truck,
@@ -24,6 +26,7 @@ import { DocStatusBadge } from '../shared/status-badge'
 import { StatCard } from '../shared/stat-card'
 import { formatMoney, formatDate, toDateInput } from '../shared/format'
 import { LineEditor, type EditorLine, type ProductOption } from '../shared/line-editor'
+import { DocumentPrintDialog, type InvoicePrintData } from '../shared/print-document'
 import { useToast } from '@/hooks/use-toast'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -69,12 +72,21 @@ interface ThirdPartyRef {
   id: string
   name: string
   code: string
+  // Enriched fields returned by the detail API for the print engine (optional)
+  address?: string | null
+  zip?: string | null
+  city?: string | null
+  country?: string | null
+  email?: string | null
+  phone?: string | null
+  vatNumber?: string | null
 }
 
 interface DocLine {
   id: string
   productId: string | null
   label: string
+  description?: string | null
   qty: number
   unitPrice: number
   discountPct: number
@@ -146,6 +158,40 @@ const toEditorLines = (lines: DocLine[] | undefined): EditorLine[] =>
     vatRate: l.vatRate,
   }))
 
+/** Map a loaded SaleOrderDetail onto the printable-document shape (dueDate ← deliveryDate). */
+function buildPrintData(d: SaleOrderDetail): InvoicePrintData {
+  return {
+    ref: d.ref,
+    date: d.date,
+    dueDate: d.deliveryDate,
+    status: d.status,
+    subtotal: d.subtotal,
+    discountTotal: d.discountTotal,
+    vatTotal: d.vatTotal,
+    total: d.total,
+    notes: d.notes,
+    thirdParty: {
+      name: d.thirdParty.name,
+      code: d.thirdParty.code,
+      address: d.thirdParty.address ?? null,
+      zip: d.thirdParty.zip ?? null,
+      city: d.thirdParty.city ?? null,
+      country: d.thirdParty.country ?? null,
+      email: d.thirdParty.email ?? null,
+      phone: d.thirdParty.phone ?? null,
+      taxId: d.thirdParty.vatNumber ?? null,
+    },
+    lines: d.lines.map((l) => ({
+      label: l.label,
+      description: l.description ?? null,
+      qty: l.qty,
+      unitPrice: l.unitPrice,
+      discountPct: l.discountPct,
+      vatRate: l.vatRate,
+    })),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -160,6 +206,8 @@ export default function SaleOrdersModule() {
   const [editing, setEditing] = useState<SaleOrderDetail | null>(null)
   const [detailId, setDetailId] = useState<string | null>(null)
   const [form, setForm] = useState<DocForm>(emptyForm)
+  const [printOpen, setPrintOpen] = useState(false)
+  const [printData, setPrintData] = useState<InvoicePrintData | null>(null)
 
   const listQ = useQuery({
     queryKey: ['sale-orders', q, status, tpFilter],
@@ -279,7 +327,39 @@ export default function SaleOrdersModule() {
     onError: (e: Error) => toast({ title: 'Delete failed', description: e.message, variant: 'destructive' }),
   })
 
-  const busy = saveMut.isPending || actionMut.isPending || deleteMut.isPending
+  /** Duplicate-as-draft: same create payload the form sends, date = today. */
+  const duplicateMut = useMutation({
+    mutationFn: async (id: string) => {
+      const d = await qc.fetchQuery({
+        queryKey: ['sale-order', id],
+        queryFn: () => get<SaleOrderDetail>(`/api/sale-orders/${id}`),
+      })
+      return post<SaleOrderDetail>('/api/sale-orders', {
+        thirdPartyId: d.thirdParty.id,
+        date: toDateInput(new Date()),
+        notes: d.notes || undefined,
+        lines: d.lines.map((l) => ({
+          productId: l.productId || undefined,
+          label: l.label,
+          description: l.description || undefined,
+          qty: l.qty,
+          unitPrice: l.unitPrice,
+          discountPct: l.discountPct,
+          vatRate: l.vatRate,
+          sort: l.sort,
+        })),
+      })
+    },
+    onSuccess: (data) => {
+      invalidateAll()
+      setDetailId(null)
+      toast({ title: `Duplicated as ${data.ref}`, description: 'A new draft sale order was created from this one.' })
+    },
+    onError: (e: Error) => toast({ title: 'Duplicate failed', description: e.message, variant: 'destructive' }),
+  })
+
+  const busy =
+    saveMut.isPending || actionMut.isPending || deleteMut.isPending || duplicateMut.isPending
 
   // ----- Handlers -----
   const openCreate = () => {
@@ -304,6 +384,17 @@ export default function SaleOrdersModule() {
       })
       setEditing(d)
       setCreateOpen(true)
+    })
+  }
+
+  /** Open the print dialog for an order (reuses the detail query cache). */
+  const openPrint = (o: Pick<SaleOrderListItem, 'id'>) => {
+    qc.fetchQuery({
+      queryKey: ['sale-order', o.id],
+      queryFn: () => get<SaleOrderDetail>(`/api/sale-orders/${o.id}`),
+    }).then((d) => {
+      setPrintData(buildPrintData(d))
+      setPrintOpen(true)
     })
   }
 
@@ -337,6 +428,12 @@ export default function SaleOrdersModule() {
       </DropdownMenuItem>
     )
     const items: React.ReactNode[] = []
+    items.push(
+      <DropdownMenuItem key="print" onSelect={() => openPrint(o)}>
+        <Printer className="h-4 w-4" />
+        Print / PDF
+      </DropdownMenuItem>
+    )
     if (o.status === 'DRAFT') {
       items.push(act('validate', 'Validate', <CheckCircle2 className="h-4 w-4" />))
     }
@@ -351,6 +448,12 @@ export default function SaleOrdersModule() {
     if (['DRAFT', 'VALIDATED', 'DELIVERED'].includes(o.status)) {
       items.push(act('cancel', 'Cancel order', <Ban className="h-4 w-4" />, true))
     }
+    items.push(
+      <DropdownMenuItem key="duplicate" disabled={busy} onSelect={() => duplicateMut.mutate(o.id)}>
+        <Copy className="h-4 w-4" />
+        Duplicate
+      </DropdownMenuItem>
+    )
     if (o.status === 'DRAFT') {
       items.push(
         <DropdownMenuSeparator key="sep-del" />,
@@ -696,6 +799,17 @@ export default function SaleOrdersModule() {
 
               <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <Button size="sm" variant="outline" onClick={() => openPrint(detail)}>
+                    <Printer className="h-4 w-4" /> Print / PDF
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => duplicateMut.mutate(detail.id)}
+                  >
+                    <Copy className="h-4 w-4" /> Duplicate
+                  </Button>
                   {detail.status === 'DRAFT' && (
                     <Button size="sm" disabled={busy} onClick={() => actionMut.mutate({ id: detail.id, action: 'validate' })}>
                       <CheckCircle2 className="h-4 w-4" /> Validate
@@ -747,13 +861,24 @@ export default function SaleOrdersModule() {
               </DialogFooter>
             </>
           ) : (
-            <div className="space-y-3 py-4">
+            <div className="space-y-3 py-4" aria-busy="true">
+              <DialogTitle className="sr-only">Loading sale order…</DialogTitle>
+              <DialogDescription className="sr-only">Fetching order details.</DialogDescription>
               <Skeleton className="h-8 w-48" />
               <Skeleton className="h-40 w-full" />
             </div>
           )}
         </DialogContent>
       </Dialog>
+
+      {printData && (
+        <DocumentPrintDialog
+          open={printOpen}
+          onOpenChange={setPrintOpen}
+          kind="ORDER"
+          data={printData}
+        />
+      )}
     </div>
   )
 }

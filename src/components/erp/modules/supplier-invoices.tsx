@@ -11,6 +11,7 @@ import {
   MoreVertical,
   Pencil,
   Plus,
+  Printer,
   ReceiptText,
   Search,
   Trash2,
@@ -66,6 +67,7 @@ import { PageHeader, EmptyState } from '@/components/erp/shared/page-header'
 import { DocStatusBadge } from '@/components/erp/shared/status-badge'
 import { StatCard } from '@/components/erp/shared/stat-card'
 import { formatDate, formatMoney, toDateInput } from '@/components/erp/shared/format'
+import { DocumentPrintDialog, type InvoicePrintData } from '@/components/erp/shared/print-document'
 import { useToast } from '@/hooks/use-toast'
 
 // ---------------------------------------------------------------------------
@@ -77,6 +79,14 @@ interface ThirdPartyLite {
   code: string
   type?: string
   status?: string
+  // Enriched fields returned by the detail API for the print engine (optional)
+  address?: string | null
+  zip?: string | null
+  city?: string | null
+  country?: string | null
+  email?: string | null
+  phone?: string | null
+  vatNumber?: string | null
 }
 
 interface PurchaseOrderLite {
@@ -149,6 +159,35 @@ function isOverdue(inv: SupplierInvoice, now = Date.now()): boolean {
     !!inv.dueDate &&
     new Date(inv.dueDate).getTime() < now
   )
+}
+
+/** Map a SupplierInvoice (detail payload) onto the printable-document shape. */
+function buildPrintData(inv: SupplierInvoice): InvoicePrintData {
+  return {
+    ref: inv.ref,
+    date: inv.date,
+    dueDate: inv.dueDate,
+    status: inv.status,
+    subtotal: inv.subtotal,
+    discountTotal: 0,
+    vatTotal: inv.vatTotal,
+    total: inv.total,
+    paidAmount: inv.paidAmount,
+    notes: inv.notes,
+    thirdParty: {
+      name: inv.thirdParty.name,
+      code: inv.thirdParty.code,
+      address: inv.thirdParty.address ?? null,
+      zip: inv.thirdParty.zip ?? null,
+      city: inv.thirdParty.city ?? null,
+      country: inv.thirdParty.country ?? null,
+      email: inv.thirdParty.email ?? null,
+      phone: inv.thirdParty.phone ?? null,
+      taxId: inv.thirdParty.vatNumber ?? null,
+    },
+    lines: [],
+    linkedRef: inv.purchaseOrder?.ref,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +537,7 @@ function SIDetailDialog({
   onAction,
   onEdit,
   onPay,
+  onPrint,
 }: {
   invoice: SupplierInvoice | null
   isLoading: boolean
@@ -506,6 +546,7 @@ function SIDetailDialog({
   onAction: (inv: SupplierInvoice, action: 'validate' | 'cancel') => void
   onEdit: (inv: SupplierInvoice) => void
   onPay: (inv: SupplierInvoice) => void
+  onPrint: (inv: SupplierInvoice) => void
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -614,6 +655,9 @@ function SIDetailDialog({
             </div>
 
             <div className="flex flex-wrap gap-2 border-t pt-3">
+              <Button size="sm" variant="outline" className="min-h-[40px]" onClick={() => onPrint(invoice)}>
+                <Printer className="h-4 w-4" /> Print / PDF
+              </Button>
               {invoice.status === 'DRAFT' && (
                 <>
                   <Button size="sm" className="min-h-[40px]" onClick={() => onAction(invoice, 'validate')}>
@@ -661,6 +705,8 @@ export default function SupplierInvoicesModule() {
   const [formOpen, setFormOpen] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [payInvoice, setPayInvoice] = useState<SupplierInvoice | null>(null)
+  const [printOpen, setPrintOpen] = useState(false)
+  const [printData, setPrintData] = useState<InvoicePrintData | null>(null)
 
   // ---- Data ---------------------------------------------------------------
   const listQuery = useQuery({
@@ -816,6 +862,23 @@ export default function SupplierInvoicesModule() {
     setDetailOpen(true)
   }
 
+  /** Open the print dialog — fetch the detail (enriched thirdParty) first. */
+  const openPrint = (inv: SupplierInvoice) => {
+    queryClient
+      .fetchQuery({
+        queryKey: ['supplier-invoice', inv.id],
+        queryFn: () => get<SupplierInvoice>(`/api/supplier-invoices/${inv.id}`),
+      })
+      .then((d) => {
+        setPrintData(buildPrintData(d))
+        setPrintOpen(true)
+      })
+      .catch(() => {
+        setPrintData(buildPrintData(inv))
+        setPrintOpen(true)
+      })
+  }
+
   const rowActions = (inv: SupplierInvoice) => (
     <div className="flex items-center justify-end gap-1">
       <Button
@@ -839,6 +902,9 @@ export default function SupplierInvoicesModule() {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => openPrint(inv)}>
+            <Printer className="h-4 w-4" /> Print / PDF
+          </DropdownMenuItem>
           {inv.status === 'DRAFT' && (
             <DropdownMenuItem onClick={() => handleAction(inv, 'validate')}>
               <CircleCheck className="h-4 w-4" /> Validate
@@ -1028,7 +1094,18 @@ export default function SupplierInvoicesModule() {
           openEdit(inv)
         }}
         onPay={(inv) => setPayInvoice(inv)}
+        onPrint={openPrint}
       />
+
+      {/* Print / PDF preview */}
+      {printData && (
+        <DocumentPrintDialog
+          open={printOpen}
+          onOpenChange={setPrintOpen}
+          kind="SUPPLIER_INVOICE"
+          data={printData}
+        />
+      )}
 
       {/* Record payment */}
       {payInvoice && (

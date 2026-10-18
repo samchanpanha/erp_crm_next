@@ -6,11 +6,13 @@ import {
   ArrowRightLeft,
   Ban,
   CheckCircle2,
+  Copy,
   CreditCard,
   Eye,
   MoreHorizontal,
   Pencil,
   Plus,
+  Printer,
   Receipt,
   Sigma,
   TriangleAlert,
@@ -23,6 +25,7 @@ import { DocStatusBadge } from '../shared/status-badge'
 import { StatCard } from '../shared/stat-card'
 import { formatMoney, formatDate, toDateInput } from '../shared/format'
 import { LineEditor, type EditorLine, type ProductOption } from '../shared/line-editor'
+import { DocumentPrintDialog, type InvoicePrintData } from '../shared/print-document'
 import { RecordPaymentDialog, type PaymentRow, type PaymentTarget } from './payments'
 import { useToast } from '@/hooks/use-toast'
 import { Button } from '@/components/ui/button'
@@ -69,12 +72,21 @@ interface ThirdPartyRef {
   id: string
   name: string
   code: string
+  // Enriched fields returned by the detail API for the print engine (optional)
+  address?: string | null
+  zip?: string | null
+  city?: string | null
+  country?: string | null
+  email?: string | null
+  phone?: string | null
+  vatNumber?: string | null
 }
 
 interface DocLine {
   id: string
   productId: string | null
   label: string
+  description?: string | null
   qty: number
   unitPrice: number
   discountPct: number
@@ -152,6 +164,42 @@ const toEditorLines = (lines: DocLine[] | undefined): EditorLine[] =>
 
 const remainingOf = (i: { total: number; paidAmount: number }) => round2(i.total - i.paidAmount)
 
+/** Map a loaded InvoiceDetail onto the printable-document shape. */
+function buildPrintData(d: InvoiceDetail): InvoicePrintData {
+  return {
+    ref: d.ref,
+    date: d.date,
+    dueDate: d.dueDate,
+    status: d.status,
+    subtotal: d.subtotal,
+    discountTotal: d.discountTotal,
+    vatTotal: d.vatTotal,
+    total: d.total,
+    paidAmount: d.paidAmount,
+    notes: d.notes,
+    thirdParty: {
+      name: d.thirdParty.name,
+      code: d.thirdParty.code,
+      address: d.thirdParty.address ?? null,
+      zip: d.thirdParty.zip ?? null,
+      city: d.thirdParty.city ?? null,
+      country: d.thirdParty.country ?? null,
+      email: d.thirdParty.email ?? null,
+      phone: d.thirdParty.phone ?? null,
+      taxId: d.thirdParty.vatNumber ?? null,
+    },
+    lines: d.lines.map((l) => ({
+      label: l.label,
+      description: l.description ?? null,
+      qty: l.qty,
+      unitPrice: l.unitPrice,
+      discountPct: l.discountPct,
+      vatRate: l.vatRate,
+    })),
+    linkedRef: d.saleOrder?.ref,
+  }
+}
+
 /** True when an unpaid invoice is past its due date */
 function isOverdue(i: { status: string; dueDate: string | null }): boolean {
   if (!i.dueDate || !['UNPAID', 'PARTIAL'].includes(i.status)) return false
@@ -176,6 +224,8 @@ export default function InvoicesModule() {
   const [form, setForm] = useState<DocForm>(emptyForm)
   const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null)
   const [payOpen, setPayOpen] = useState(false)
+  const [printOpen, setPrintOpen] = useState(false)
+  const [printData, setPrintData] = useState<InvoicePrintData | null>(null)
 
   const listQ = useQuery({
     queryKey: ['invoices', q, status, tpFilter],
@@ -289,7 +339,39 @@ export default function InvoicesModule() {
     onError: (e: Error) => toast({ title: 'Delete failed', description: e.message, variant: 'destructive' }),
   })
 
-  const busy = saveMut.isPending || actionMut.isPending || deleteMut.isPending
+  /** Duplicate-as-draft: same create payload the form sends, date = today. */
+  const duplicateMut = useMutation({
+    mutationFn: async (id: string) => {
+      const d = await qc.fetchQuery({
+        queryKey: ['invoice', id],
+        queryFn: () => get<InvoiceDetail>(`/api/invoices/${id}`),
+      })
+      return post<InvoiceDetail>('/api/invoices', {
+        thirdPartyId: d.thirdParty.id,
+        date: toDateInput(new Date()),
+        notes: d.notes || undefined,
+        lines: d.lines.map((l) => ({
+          productId: l.productId || undefined,
+          label: l.label,
+          description: l.description || undefined,
+          qty: l.qty,
+          unitPrice: l.unitPrice,
+          discountPct: l.discountPct,
+          vatRate: l.vatRate,
+          sort: l.sort,
+        })),
+      })
+    },
+    onSuccess: (data) => {
+      invalidateAll()
+      setDetailId(null)
+      toast({ title: `Duplicated as ${data.ref}`, description: 'A new draft invoice was created from this one.' })
+    },
+    onError: (e: Error) => toast({ title: 'Duplicate failed', description: e.message, variant: 'destructive' }),
+  })
+
+  const busy =
+    saveMut.isPending || actionMut.isPending || deleteMut.isPending || duplicateMut.isPending
 
   // ----- Handlers -----
   const openCreate = () => {
@@ -327,6 +409,17 @@ export default function InvoicesModule() {
     setPayOpen(true)
   }
 
+  /** Open the print dialog for an invoice (reuses the detail query cache). */
+  const openPrint = (i: Pick<InvoiceListItem, 'id'>) => {
+    qc.fetchQuery({
+      queryKey: ['invoice', i.id],
+      queryFn: () => get<InvoiceDetail>(`/api/invoices/${i.id}`),
+    }).then((d) => {
+      setPrintData(buildPrintData(d))
+      setPrintOpen(true)
+    })
+  }
+
   const submitForm = () => {
     if (!form.thirdPartyId) {
       toast({ title: 'Third party required', variant: 'destructive' })
@@ -357,6 +450,12 @@ export default function InvoicesModule() {
       </DropdownMenuItem>
     )
     const items: React.ReactNode[] = []
+    items.push(
+      <DropdownMenuItem key="print" onSelect={() => openPrint(i)}>
+        <Printer className="h-4 w-4" />
+        Print / PDF
+      </DropdownMenuItem>
+    )
     if (i.status === 'DRAFT') items.push(act('validate', 'Validate (send)', <CheckCircle2 className="h-4 w-4" />))
     if (['UNPAID', 'PARTIAL'].includes(i.status)) {
       items.push(
@@ -369,6 +468,12 @@ export default function InvoicesModule() {
     if (['DRAFT', 'UNPAID', 'PARTIAL'].includes(i.status)) {
       items.push(act('cancel', 'Cancel invoice', <Ban className="h-4 w-4" />, true))
     }
+    items.push(
+      <DropdownMenuItem key="duplicate" disabled={busy} onSelect={() => duplicateMut.mutate(i.id)}>
+        <Copy className="h-4 w-4" />
+        Duplicate
+      </DropdownMenuItem>
+    )
     if (i.status === 'DRAFT') {
       items.push(
         <DropdownMenuSeparator key="sep-del" />,
@@ -775,6 +880,17 @@ export default function InvoicesModule() {
                   )}
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <Button size="sm" variant="outline" onClick={() => openPrint(detail)}>
+                    <Printer className="h-4 w-4" /> Print / PDF
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => duplicateMut.mutate(detail.id)}
+                  >
+                    <Copy className="h-4 w-4" /> Duplicate
+                  </Button>
                   {detail.status === 'DRAFT' && (
                     <Button size="sm" disabled={busy} onClick={() => actionMut.mutate({ id: detail.id, action: 'validate' })}>
                       <CheckCircle2 className="h-4 w-4" /> Validate
@@ -821,7 +937,9 @@ export default function InvoicesModule() {
               </DialogFooter>
             </>
           ) : (
-            <div className="space-y-3 py-4">
+            <div className="space-y-3 py-4" aria-busy="true">
+              <DialogTitle className="sr-only">Loading invoice…</DialogTitle>
+              <DialogDescription className="sr-only">Fetching invoice details.</DialogDescription>
               <Skeleton className="h-8 w-48" />
               <Skeleton className="h-40 w-full" />
             </div>
@@ -835,6 +953,15 @@ export default function InvoicesModule() {
         mode="fixed"
         target={payTarget}
       />
+
+      {printData && (
+        <DocumentPrintDialog
+          open={printOpen}
+          onOpenChange={setPrintOpen}
+          kind="INVOICE"
+          data={printData}
+        />
+      )}
     </div>
   )
 }

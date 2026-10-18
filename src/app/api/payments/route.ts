@@ -29,10 +29,50 @@ const createSchema = z
 
 const paymentInclude = {
   invoice: {
-    select: { id: true, ref: true, status: true, total: true, paidAmount: true, thirdParty: { select: { id: true, name: true } } },
+    select: {
+      id: true,
+      ref: true,
+      status: true,
+      total: true,
+      paidAmount: true,
+      thirdParty: {
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          address: true,
+          zip: true,
+          city: true,
+          country: true,
+          email: true,
+          phone: true,
+          vatNumber: true,
+        },
+      },
+    },
   },
   supplierInvoice: {
-    select: { id: true, ref: true, status: true, total: true, paidAmount: true, thirdParty: { select: { id: true, name: true } } },
+    select: {
+      id: true,
+      ref: true,
+      status: true,
+      total: true,
+      paidAmount: true,
+      thirdParty: {
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          address: true,
+          zip: true,
+          city: true,
+          country: true,
+          email: true,
+          phone: true,
+          vatNumber: true,
+        },
+      },
+    },
   },
 } as const
 

@@ -7,7 +7,7 @@ import {
   LayoutDashboard, Building2, Target, FileText, ShoppingCart, FileSignature,
   Receipt, CreditCard, Landmark, Truck, PackageCheck, Package, Boxes,
   FolderKanban, Users, Palmtree, Wallet, LifeBuoy, BookOpen, CalendarDays,
-  Menu, Search, Plus, type LucideIcon,
+  ChartColumn, Settings as SettingsIcon, Menu, Search, Plus, type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -31,7 +31,13 @@ interface NavItem { key: string; label: string; icon: LucideIcon }
 interface NavGroup { group: string; items: NavItem[] }
 
 export const NAV: NavGroup[] = [
-  { group: 'Home', items: [{ key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }] },
+  {
+    group: 'Home',
+    items: [
+      { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { key: 'reports', label: 'Reports', icon: ChartColumn },
+    ],
+  },
   {
     group: 'CRM & Sales',
     items: [
@@ -81,6 +87,7 @@ export const NAV: NavGroup[] = [
     ],
   },
   { group: 'Productivity', items: [{ key: 'agenda', label: 'Agenda', icon: CalendarDays }] },
+  { group: 'Configuration', items: [{ key: 'settings', label: 'Settings', icon: SettingsIcon }] },
 ]
 
 /** Lazily loaded module views (files created incrementally per module agent) */
@@ -105,6 +112,8 @@ const MODULE_VIEWS: Record<string, React.ComponentType> = {
   tickets: dynamic(() => import('./modules/tickets'), { ssr: false, loading: loadingFallback }),
   knowledge: dynamic(() => import('./modules/knowledge'), { ssr: false, loading: loadingFallback }),
   agenda: dynamic(() => import('./modules/agenda'), { ssr: false, loading: loadingFallback }),
+  reports: dynamic(() => import('./modules/reports'), { ssr: false, loading: loadingFallback }),
+  settings: dynamic(() => import('./modules/settings'), { ssr: false, loading: loadingFallback }),
 }
 
 function useHashRoute(): string {
@@ -259,6 +268,11 @@ function TopBar({ current, onOpenMobileNav }: { current: string; onOpenMobileNav
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => navigate('employees')}>My HR space</DropdownMenuItem>
             <DropdownMenuItem onClick={() => navigate('agenda')}>My agenda</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => navigate('settings')}>
+              <SettingsIcon className="h-4 w-4" aria-hidden="true" />
+              Settings
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

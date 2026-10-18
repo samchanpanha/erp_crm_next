@@ -9,6 +9,7 @@ import {
   Eye,
   MoreHorizontal,
   Plus,
+  Printer,
   Receipt,
 } from 'lucide-react'
 
@@ -17,6 +18,7 @@ import { EmptyState, PageHeader } from '../shared/page-header'
 import { StatusBadge, type Tone } from '../shared/status-badge'
 import { StatCard } from '../shared/stat-card'
 import { formatMoney, formatDate, toDateInput } from '../shared/format'
+import { DocumentPrintDialog, type ReceiptPrintData } from '../shared/print-document'
 import { useToast } from '@/hooks/use-toast'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -64,7 +66,19 @@ interface InvoiceRef {
   status: string
   total: number
   paidAmount: number
-  thirdParty: { id: string; name: string }
+  thirdParty: {
+    id: string
+    name: string
+    // Enriched fields returned by /api/payments for the receipt engine (optional)
+    code?: string
+    address?: string | null
+    zip?: string | null
+    city?: string | null
+    country?: string | null
+    email?: string | null
+    phone?: string | null
+    vatNumber?: string | null
+  }
 }
 
 export interface PaymentRow {
@@ -132,6 +146,29 @@ function normalizeList<T>(raw: unknown, keys: string[]): T[] {
 }
 
 const isOpen = (i: OpenInvoice) => i.status === 'UNPAID' || i.status === 'PARTIAL'
+
+/** Map a payment row onto the printable receipt shape (remaining = total − paid). */
+function buildReceiptData(p: PaymentRow): ReceiptPrintData | null {
+  const doc = p.invoice ?? p.supplierInvoice
+  if (!doc) return null
+  const tp = doc.thirdParty
+  return {
+    paymentRef: p.reference ?? undefined,
+    amount: p.amount,
+    method: p.method,
+    date: p.date,
+    reference: p.reference,
+    invoice: { ref: doc.ref, total: doc.total, paidAmount: doc.paidAmount },
+    customer: {
+      name: tp.name,
+      code: tp.code ?? '—',
+      address: tp.address ?? null,
+      email: tp.email ?? null,
+      phone: tp.phone ?? null,
+      taxId: tp.vatNumber ?? null,
+    },
+  }
+}
 
 // ---------------------------------------------------------------------------
 // RecordPaymentDialog — shared by the Payments module (pick mode) and the
@@ -447,6 +484,16 @@ export default function PaymentsModule() {
   const [q, setQ] = useState('')
   const [method, setMethod] = useState('ALL')
   const [payOpen, setPayOpen] = useState(false)
+  const [printOpen, setPrintOpen] = useState(false)
+  const [printData, setPrintData] = useState<ReceiptPrintData | null>(null)
+
+  /** Open the receipt print dialog for a payment row. */
+  const openReceipt = (p: PaymentRow) => {
+    const data = buildReceiptData(p)
+    if (!data) return
+    setPrintData(data)
+    setPrintOpen(true)
+  }
 
   const listQ = useQuery({
     queryKey: ['payments', q, method],
@@ -613,6 +660,11 @@ export default function PaymentsModule() {
                                 )}
                                 {p.note && <span className="text-xs text-muted-foreground">{p.note}</span>}
                               </DropdownMenuItem>
+                              {doc && (
+                                <DropdownMenuItem onSelect={() => openReceipt(p)}>
+                                  <Printer className="h-4 w-4" /> Receipt / PDF
+                                </DropdownMenuItem>
+                              )}
                               {p.invoice && (
                                 <DropdownMenuItem asChild>
                                   <a href="#/invoices" className="flex items-center gap-2">
@@ -634,6 +686,15 @@ export default function PaymentsModule() {
       </Card>
 
       <RecordPaymentDialog open={payOpen} onOpenChange={setPayOpen} mode="pick" />
+
+      {printData && (
+        <DocumentPrintDialog
+          open={printOpen}
+          onOpenChange={setPrintOpen}
+          kind="RECEIPT"
+          data={printData}
+        />
+      )}
     </div>
   )
 }
