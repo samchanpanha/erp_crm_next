@@ -9,7 +9,7 @@ import {
   FolderKanban, Users, Palmtree, Wallet, LifeBuoy, BookOpen, CalendarDays,
   ChartColumn, Settings as SettingsIcon, Menu, Search, Plus, LogOut,
   ShieldCheck, Loader2, ChevronDown, House, Contact, TrendingUp,
-  ShoppingBag, Warehouse, Briefcase, Headphones, SlidersHorizontal, Coffee,
+  ShoppingBag, Warehouse, Briefcase, Headphones, SlidersHorizontal,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -26,7 +26,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import AuthScreen from '@/components/erp/auth-screen'
-import { CoffeeQuickButton } from '@/components/erp/shared/coffee-qr'
 
 const loadingFallback = () => (
   <div className="flex h-64 items-center justify-center gap-3 text-muted-foreground">
@@ -118,11 +117,6 @@ export const NAV: NavGroup[] = [
       { key: 'users', label: 'Users & Roles', icon: ShieldCheck },
     ],
   },
-  {
-    group: 'Coffee',
-    icon: Coffee,
-    items: [{ key: 'coffee', label: 'Buy Me a Coffee', icon: Coffee }],
-  },
 ]
 
 /** Nav key → permission module (dashboard has no entry: always visible) */
@@ -134,7 +128,7 @@ const NAV_PERMISSIONS: Record<string, string> = {
   products: 'products', stock: 'stock', projects: 'projects',
   employees: 'employees', leave: 'leave', expenses: 'expenses',
   tickets: 'tickets', knowledge: 'knowledge', agenda: 'agenda',
-  settings: 'settings', users: 'administration', coffee: 'coffee',
+  settings: 'settings', users: 'administration',
 }
 
 /** Quick-create entries, gated by the target module's .edit permission */
@@ -174,7 +168,6 @@ const MODULE_VIEWS: Record<string, React.ComponentType> = {
   reports: dynamic(() => import('./modules/reports'), { ssr: false, loading: loadingFallback }),
   settings: dynamic(() => import('./modules/settings'), { ssr: false, loading: loadingFallback }),
   users: dynamic(() => import('./modules/users'), { ssr: false, loading: loadingFallback }),
-  coffee: dynamic(() => import('./modules/coffee'), { ssr: false, loading: loadingFallback }),
 }
 
 /** Keep only nav items the user may view; drop groups that become empty. */
@@ -493,9 +486,6 @@ function TopBar({
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        {/* Buy me a coffee — KHQR quick access beside Quick create */}
-        <CoffeeQuickButton user={user} />
-
         {quickCreateItems.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

@@ -744,3 +744,29 @@ Stage Summary:
 - Buy Me a Coffee now runs on a static KHQR image: a single server file, settable/removable ONLY by the super administrator (client-hidden + server-enforced), shown as the only image in the top-bar dialog, coffee page, pay dialog and Settings, with iframe-safe static <img> + fetch→blob download and ?v= cache busting
 - Fixed a real dashboard mobile overflow (grid min-width:auto + nowrap text) with min-w-0 on grid-child cards
 - Demo credentials unchanged: admin@dolinext.com / demo123 (super admin) · pat@demo.local / testpass123 (Viewer)
+
+---
+Task ID: 28
+Agent: Main orchestrator (Z.ai Code)
+Task: "I want to remove module coffee" — full removal of the Buy Me a Coffee module (Tasks 25-27)
+
+Work Log:
+- Inventory sweep (rg coffee|khqr across repo): 12 code files + 4 scripts + public/coffee + DB models/rows identified
+- erp-app.tsx: removed Coffee lucide import, CoffeeQuickButton import + top-bar JSX (beside Quick create), the whole 'Coffee' nav group, NAV_PERMISSIONS.coffee, MODULE_VIEWS.coffee lazy import — back to the original 9-group sidebar
+- permissions.ts: removed the 'coffee' PERMISSION_MODULES entry; removed now-unused isSuperAdmin(); Manager preset filter simplified to !startsWith('administration.') and description no longer mentions the coffee page
+- prisma/schema.prisma: deleted CoffeePage + CoffeeSupport models; bun run db:push (tables dropped, client regenerated)
+- Deleted files: src/app/api/coffee/ (page, static-image, supports, supports/[id]), src/components/erp/modules/coffee.tsx, src/components/erp/shared/coffee-qr.tsx, src/lib/static-khqr.ts, public/coffee/, scripts/{seed-coffee-perms,coffee-superadmin-only,verify-coffee-static,make-test-png}.ts
+- DB cleanup: one-off script stripped stale "coffee.*" strings from Role.permissions JSON — 6 roles updated (Manager×2, Sales, Accountant, Viewer×2), script removed after run
+- layout.tsx: toast comment no longer lists coffee
+- Verification:
+  * rg coffee|khqr in src/ scripts/ prisma/ public/ → zero matches
+  * eslint clean; tsc --noEmit errors only in pre-existing examples/ + skills/ (excluded dirs)
+  * curl: GET /api/coffee/page → 404 (route gone); GET / 200; /api/auth/me 200 after prisma regen
+  * Browser E2E (admin@dolinext.com): sidebar = 9 groups, NO Coffee group; top bar = NO coffee button beside Quick create; Quick create dropdown = all 8 items intact; Invoices module renders; module search "coffee" → no results, "inv" → works; Users & Roles → Roles tab lists Administrator/Manager/Sales/Accountant/Viewer, body text hasCoffee=false
+  * Mobile 390px: no horizontal overflow, top bar icon-only Quick create, no coffee button
+  * Zero console errors / page errors; dev.log free of 5xx
+
+Stage Summary:
+- Buy Me a Coffee module (Tasks 25-27) fully removed: UI, nav, permissions catalog, API routes, static-image lib, DB tables, seeded role permission strings, public assets and dev scripts — codebase rg-verified coffee/khqr-free
+- Sidebar is back to 9 groups (Home, CRM & Sales, Billing & Finance, Purchasing, Products & Stock, Projects, HR, Support, Configuration); Quick create and all other modules unaffected
+- Demo credentials unchanged: admin@dolinext.com / demo123 · pat@demo.local / testpass123 (Viewer)

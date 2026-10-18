@@ -43,7 +43,7 @@ export default function RootLayout({
       >
         {children}
         <Toaster />
-        {/* Sonner toasts — used by newer modules (users, coffee, import-export) */}
+        {/* Sonner toasts — used by newer modules (users, import-export) */}
         <SonnerToaster position="bottom-right" richColors closeButton />
       </body>
     </html>

@@ -700,35 +700,3 @@ model Session {
 
   @@index([userId])
 }
-
-// ---------------------------------------------------------------------------
-// Buy Me a Coffee — supporter page config (incl. uploaded KHQR payment QR)
-// and a log of support received. One page per tenant; supports are per tenant.
-// ---------------------------------------------------------------------------
-model CoffeePage {
-  id            String   @id @default(cuid())
-  tenantId      String   @unique // exactly one coffee page per tenant
-  displayName   String   @default("Buy me a coffee")
-  tagline       String   @default("If my work makes your day easier, a coffee is a wonderful thank-you.")
-  currency      String   @default("USD") // USD | KHR (KHQR supports both)
-  presetAmounts String   @default("1,3,5,10") // comma-separated positive numbers
-  khqrImage     String?  // uploaded KHQR image as data URL (png/jpeg/webp, <= 2 MB)
-  khqrName      String?  // account holder name shown under the QR
-  khqrBank      String?  // bank / app label e.g. "Bakong · ACLEDA"
-  updatedAt     DateTime @updatedAt
-
-  @@index([tenantId])
-}
-
-model CoffeeSupport {
-  id        String   @id @default(cuid())
-  tenantId  String
-  name      String
-  amount    Float
-  currency  String   @default("USD") // USD | KHR — currency of the received payment
-  message   String?
-  date      DateTime @default(now())
-  createdAt DateTime @default(now())
-
-  @@index([tenantId])
-}

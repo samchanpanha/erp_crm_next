@@ -38,7 +38,6 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { module: 'data', label: 'Import / Export', group: 'Administration' },
   { module: 'settings', label: 'Settings & templates', group: 'Administration' },
   { module: 'administration', label: 'Users & roles', group: 'Administration' },
-  { module: 'coffee', label: 'Buy me a coffee page', group: 'Administration' },
 ]
 
 export function perm(module: string, action: PermissionAction): string {
@@ -55,15 +54,6 @@ export function canView(permissions: string[], moduleName: string): boolean {
 
 export function canEdit(permissions: string[], moduleName: string): boolean {
   return hasPerm(permissions, perm(moduleName, 'edit'))
-}
-
-/**
- * Super administrator = the wildcard "*" permission. This is the only role
- * level allowed to upload/replace the tenant's KHQR payment image — the QR
- * must always belong to the account owner, never to a delegated editor.
- */
-export function isSuperAdmin(permissions: string[]): boolean {
-  return permissions.includes('*')
 }
 
 export interface SystemRoleDef {
@@ -87,14 +77,10 @@ export const SYSTEM_ROLE_DEFS: SystemRoleDef[] = [
   },
   {
     name: 'Manager',
-    description:
-      'Runs the business: all modules and settings, but cannot manage users & roles ' +
-      'or the coffee page (KHQR uploads are super-administrator only).',
+    description: 'Runs the business: all modules and settings, but cannot manage users & roles.',
     permissions: [
       ...allPerms('view'),
-      ...allPerms('edit').filter(
-        (p) => !p.startsWith('administration.') && p !== perm('coffee', 'edit'),
-      ),
+      ...allPerms('edit').filter((p) => !p.startsWith('administration.')),
     ],
   },
   {
