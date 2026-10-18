@@ -289,3 +289,17 @@ Stage Summary:
 - 24 API endpoints, 25 Prisma models, seeded demo data
 - Tech: Next.js 16 App Router, TypeScript strict, Prisma/SQLite, TanStack Query, shadcn/ui, recharts, zod; orange primary (no blue/indigo)
 - Known scoped-out v1 items (roadmap): CMS/Website, POS, Manufacturing/BOM, Emailing, Surveys, Recruitment, Membership, double-entry ledger, import/export UI
+
+---
+Task ID: 17
+Agent: Main orchestrator (Z.ai Code)
+Task: Fix reported hydration mismatch error on / (user console report)
+
+Work Log:
+- Diagnosed error: attributes `data-new-gr-c-s-check-loaded` / `data-gr-ext-installed` on <body> are injected by the user's Grammarly browser extension before React hydrates -> classic extension-caused hydration attribute mismatch
+- Fix: added `suppressHydrationWarning` to the <body> element in src/app/layout.tsx (already present on <html>); suppressHydrationWarning only silences attribute diffs one level deep, so legitimate child mismatches would still surface
+- Verified in agent-browser (dedicated session): page loads, dashboard renders ("Welcome back, Alice"), zero page errors, zero console errors (previously the tree-hydrated error appeared in console)
+- dev.log: GET / 200, clean recompile after edit
+
+Stage Summary:
+- Hydration error from browser extensions (Grammarly et al.) permanently silenced via suppressHydrationWarning on <body>; no other changes; app state untouched (20 modules / 24 endpoints intact)
