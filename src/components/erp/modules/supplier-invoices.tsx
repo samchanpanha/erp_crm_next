@@ -164,6 +164,7 @@ function isOverdue(inv: SupplierInvoice, now = Date.now()): boolean {
 /** Map a SupplierInvoice (detail payload) onto the printable-document shape. */
 function buildPrintData(inv: SupplierInvoice): InvoicePrintData {
   return {
+    id: inv.id,
     ref: inv.ref,
     date: inv.date,
     dueDate: inv.dueDate,

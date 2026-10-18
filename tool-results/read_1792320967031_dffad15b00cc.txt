@@ -1,0 +1,736 @@
+     1→'use client'
+     2→
+     3→/**
+     4→ * Printable document engine (V2) — renders branded, template-driven previews of
+     5→ * invoices / proposals / orders / supplier invoices / payment receipts inside a
+     6→ * Dialog and prints them via the browser "Save as PDF" flow.
+     7→ *
+     8→ * Print isolation relies on the @media print rules in globals.css keyed on
+     9→ * `body.printing-doc` + `.print-area` (visibility isolation). Because the
+    10→ * preview lives inside a fixed/transformed Radix Dialog, `usePrintNow` also
+    11→ * injects a temporary <style id="print-page-size"> that carries the @page rule
+    12→ * plus dialog-flattening rules so the .print-area lands at the top-left of the
+    13→ * printed page.
+    14→ */
+    15→import { useCallback, useEffect, useMemo } from 'react'
+    16→import { useQuery } from '@tanstack/react-query'
+    17→import { Loader2, Printer, X } from 'lucide-react'
+    18→
+    19→import { get } from '../lib/api'
+    20→import { computeLineTotal } from '@/lib/doc-math'
+    21→import {
+    22→  DEFAULT_TEMPLATE_CONFIG,
+    23→  DOC_TYPE_LABELS,
+    24→  PAYMENT_METHOD_LABELS,
+    25→  STATUS_LABELS,
+    26→  resolvePlaceholders,
+    27→  templateConfigSchema,
+    28→  type TemplateConfig,
+    29→} from '@/lib/template-schema'
+    30→import { useSettingsStore, type SettingsMap } from '@/lib/settings-store'
+    31→import { formatDate, formatMoney } from './format'
+    32→import { Badge } from '@/components/ui/badge'
+    33→import { Button } from '@/components/ui/button'
+    34→import {
+    35→  Dialog,
+    36→  DialogContent,
+    37→  DialogDescription,
+    38→  DialogHeader,
+    39→  DialogTitle,
+    40→} from '@/components/ui/dialog'
+    41→
+    42→// ---------------------------------------------------------------------------
+    43→// Public data shapes
+    44→// ---------------------------------------------------------------------------
+    45→export interface InvoicePrintData {
+    46→  ref: string
+    47→  date: string
+    48→  dueDate: string | null
+    49→  status: string
+    50→  subtotal: number
+    51→  discountTotal: number
+    52→  vatTotal: number
+    53→  total: number
+    54→  paidAmount?: number
+    55→  notes?: string | null
+    56→  thirdParty: {
+    57→    name: string
+    58→    code: string
+    59→    address?: string | null
+    60→    zip?: string | null
+    61→    city?: string | null
+    62→    country?: string | null
+    63→    email?: string | null
+    64→    phone?: string | null
+    65→    taxId?: string | null
+    66→  }
+    67→  lines: {
+    68→    label: string
+    69→    description?: string | null
+    70→    qty: number
+    71→    unitPrice: number
+    72→    discountPct: number
+    73→    vatRate: number
+    74→  }[]
+    75→  linkedRef?: string
+    76→}
+    77→
+    78→export interface ReceiptPrintData {
+    79→  paymentRef?: string
+    80→  amount: number
+    81→  method: string
+    82→  date: string
+    83→  reference?: string | null
+    84→  invoice: { ref: string; total: number; paidAmount: number }
+    85→  customer: {
+    86→    name: string
+    87→    code: string
+    88→    address?: string | null
+    89→    email?: string | null
+    90→    phone?: string | null
+    91→    taxId?: string | null
+    92→  }
+    93→}
+    94→
+    95→export type DocKind = 'INVOICE' | 'PROPOSAL' | 'ORDER' | 'SUPPLIER_INVOICE' | 'RECEIPT'
+    96→
+    97→// ---------------------------------------------------------------------------
+    98→// Template loading (default template per kind, resilient fallbacks)
+    99→// ---------------------------------------------------------------------------
+   100→interface TemplateRow {
+   101→  id: string
+   102→  name: string
+   103→  type: string
+   104→  isDefault: boolean
+   105→  config: string
+   106→}
+   107→
+   108→function parseConfig(raw: string | undefined): TemplateConfig {
+   109→  if (!raw) return DEFAULT_TEMPLATE_CONFIG
+   110→  try {
+   111→    const parsed = templateConfigSchema.safeParse(JSON.parse(raw))
+   112→    return parsed.success ? parsed.data : DEFAULT_TEMPLATE_CONFIG
+   113→  } catch {
+   114→    return DEFAULT_TEMPLATE_CONFIG
+   115→  }
+   116→}
+   117→
+   118→function useDocTemplate(kind: DocKind, enabled: boolean) {
+   119→  return useQuery({
+   120→    queryKey: ['doc-template', kind],
+   121→    enabled,
+   122→    staleTime: 60_000,
+   123→    queryFn: async (): Promise<{ name: string; config: TemplateConfig }> => {
+   124→      try {
+   125→        const rows = await get<TemplateRow[]>(`/api/doc-templates?type=${kind}`)
+   126→        const row = rows.find((r) => r.isDefault) ?? rows[0]
+   127→        if (!row) return { name: 'Default template', config: DEFAULT_TEMPLATE_CONFIG }
+   128→        return { name: row.name, config: parseConfig(row.config) }
+   129→      } catch {
+   130→        return { name: 'Default template', config: DEFAULT_TEMPLATE_CONFIG }
+   131→      }
+   132→    },
+   133→  })
+   134→}
+   135→
+   136→// ---------------------------------------------------------------------------
+   137→// Print plumbing — body.printing-doc + @page size style + window.print()
+   138→// ---------------------------------------------------------------------------
+   139→export function usePrintNow(paperSize: 'A4' | 'LETTER' = 'A4') {
+   140→  return useCallback(() => {
+   141→    document.body.classList.add('printing-doc')
+   142→
+   143→    // Temporary @page + dialog-flattening rules (removed again on cleanup).
+   144→    document.getElementById('print-page-size')?.remove()
+   145→    const style = document.createElement('style')
+   146→    style.id = 'print-page-size'
+   147→    style.textContent = [
+   148→      `@page { size: ${paperSize === 'LETTER' ? 'letter' : 'A4'}; margin: 12mm }`,
+   149→      // The preview is rendered inside a fixed + transformed Radix dialog —
+   150→      // flatten it so .print-area's absolute positioning resolves to the page.
+   151→      'body.printing-doc [data-slot="dialog-content"] {',
+   152→      '  position: static !important; transform: none !important; inset: auto !important;',
+   153→      '  width: auto !important; max-width: none !important; margin: 0 !important; padding: 0 !important;',
+   154→      '  border: 0 !important; box-shadow: none !important; background: white !important;',
+   155→      '  overflow: visible !important; display: block !important;',
+   156→      '}',
+   157→      'body.printing-doc [data-slot="dialog-overlay"] { display: none !important; }',
+   158→      'body.printing-doc .print-area { max-height: none !important; width: auto !important; max-width: 100% !important; box-sizing: border-box !important; }',
+   159→    ].join('\n')
+   160→    document.head.appendChild(style)
+   161→
+   162→    const cleanup = () => {
+   163→      document.body.classList.remove('printing-doc')
+   164→      document.getElementById('print-page-size')?.remove()
+   165→    }
+   166→    window.addEventListener('afterprint', cleanup, { once: true })
+   167→    window.print()
+   168→    // Safety net in case afterprint never fires (e.g. print dialog dismissed oddly)
+   169→    window.setTimeout(cleanup, 2000)
+   170→  }, [paperSize])
+   171→}
+   172→
+   173→// ---------------------------------------------------------------------------
+   174→// Value helpers for placeholder resolution
+   175→// ---------------------------------------------------------------------------
+   176→function companyAddressLine(s: SettingsMap): string {
+   177→  const cityLine = [s['company.zip'], s['company.city']].filter(Boolean).join(' ')
+   178→  return [s['company.address'], cityLine, s['company.country']]
+   179→    .filter((p): p is string => !!p)
+   180→    .join(', ')
+   181→}
+   182→
+   183→function customerAddressLine(tp: {
+   184→  address?: string | null
+   185→  zip?: string | null
+   186→  city?: string | null
+   187→  country?: string | null
+   188→}): string {
+   189→  const cityLine = [tp.zip, tp.city].filter(Boolean).join(' ')
+   190→  return [tp.address, cityLine, tp.country]
+   191→    .filter((p): p is string => !!p && p.length > 0)
+   192→    .join(', ')
+   193→}
+   194→
+   195→// ---------------------------------------------------------------------------
+   196→// Shared document chrome
+   197→// ---------------------------------------------------------------------------
+   198→const printAreaStyle = (paperSize: 'A4' | 'LETTER'): React.CSSProperties => ({
+   199→  maxWidth: paperSize === 'LETTER' ? 816 : 794,
+   200→  padding: 48,
+   201→  fontSize: 13,
+   202→  colorAdjust: 'exact',
+   203→  WebkitPrintColorAdjust: 'exact',
+   204→})
+   205→
+   206→function CompanyBlock({ config, settings }: { config: TemplateConfig; settings: SettingsMap }) {
+   207→  const logo = settings['company.logoDataUrl']
+   208→  return (
+   209→    <div className="min-w-0">
+   210→      {config.fields.showLogo && logo ? (
+   211→        <img src={logo} alt={`${settings['company.name']} logo`} className="mb-2 h-14 object-contain" />
+   212→      ) : null}
+   213→      <p className="text-lg font-bold leading-tight">{settings['company.name']}</p>
+   214→      <p className="mt-0.5 text-[12px] text-neutral-500">{companyAddressLine(settings)}</p>
+   215→      <p className="text-[12px] text-neutral-500">
+   216→        {[settings['company.phone'], settings['company.email'], settings['company.taxId']]
+   217→          .filter(Boolean)
+   218→          .join(' · ')}
+   219→      </p>
+   220→    </div>
+   221→  )
+   222→}
+   223→
+   224→function MetaBox({ rows }: { rows: { label: string; value: string }[] }) {
+   225→  const visible = rows.filter((r) => r.label && r.value && r.value !== '—')
+   226→  if (visible.length === 0) return null
+   227→  return (
+   228→    <div className="min-w-52 rounded-md border border-neutral-300 px-4 py-3 text-[12px]">
+   229→      {visible.map((r) => (
+   230→        <div key={r.label} className="flex justify-between gap-6 py-0.5">
+   231→          <span className="text-neutral-500">{r.label}</span>
+   232→          <span className="font-medium">{r.value}</span>
+   233→        </div>
+   234→      ))}
+   235→    </div>
+   236→  )
+   237→}
+   238→
+   239→function BillToCard({
+   240→  tp,
+   241→  accentColor,
+   242→  label = 'Bill to',
+   243→}: {
+   244→  tp: InvoicePrintData['thirdParty'] | ReceiptPrintData['customer']
+   245→  accentColor: string
+   246→  label?: string
+   247→}) {
+   248→  const lines = [
+   249→    customerAddressLine(tp),
+   250→    tp.email ?? '',
+   251→    tp.phone ?? '',
+   252→    tp.taxId ? `Tax ID: ${tp.taxId}` : '',
+   253→  ].filter(Boolean)
+   254→  return (
+   255→    <div className="my-6" style={{ borderLeft: `3px solid ${accentColor}` }}>
+   256→      <p className="px-3 text-[10px] font-semibold uppercase tracking-widest text-neutral-500">{label}</p>
+   257→      <p className="px-3 pt-0.5 font-bold">{tp.name}</p>
+   258→      <p className="px-3 text-[11px] text-neutral-500">{tp.code}</p>
+   259→      {lines.map((l) => (
+   260→        <p key={l} className="px-3 text-[12px] text-neutral-600">
+   261→          {l}
+   262→        </p>
+   263→      ))}
+   264→    </div>
+   265→  )
+   266→}
+   267→
+   268→function PaidStamp({ accentColor }: { accentColor: string }) {
+   269→  return (
+   270→    <div
+   271→      aria-hidden="true"
+   272→      className="absolute top-6 right-6 rotate-[-12deg] rounded-md border-2 px-5 py-1.5 text-2xl font-black uppercase tracking-widest opacity-60"
+   273→      style={{ borderColor: accentColor, color: accentColor }}
+   274→    >
+   275→      Paid
+   276→    </div>
+   277→  )
+   278→}
+   279→
+   280→// ---------------------------------------------------------------------------
+   281→// Footer (payment terms / bank details / signature / bottom strip)
+   282→// ---------------------------------------------------------------------------
+   283→function DocFooter({ config, settings, footerNote }: { config: TemplateConfig; settings: SettingsMap; footerNote: string }) {
+   284→  const f = config.fields
+   285→  return (
+   286→    <div className="mt-10">
+   287→      {footerNote ? <p className="mb-3 text-[12px] italic text-neutral-500">{footerNote}</p> : null}
+   288→      <div className="flex flex-wrap items-end justify-between gap-6">
+   289→        <div className="min-w-0 space-y-3">
+   290→          {f.showPaymentTerms && (
+   291→            <p className="text-[12px] text-neutral-600">
+   292→              Payment terms: {settings['sales.defaultPaymentTerms'] || '—'}
+   293→            </p>
+   294→          )}
+   295→          {f.showBankDetails && settings['company.bankDetails'] ? (
+   296→            <div className="max-w-md rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 text-[11.5px] text-neutral-600">
+   297→              <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-widest text-neutral-400">
+   298→                Bank details
+   299→              </p>
+   300→              <p className="whitespace-pre-wrap">{settings['company.bankDetails']}</p>
+   301→            </div>
+   302→          ) : null}
+   303→        </div>
+   304→        {f.showSignature && (
+   305→          <div className="w-56">
+   306→            <div className="h-16 border-t border-neutral-400" />
+   307→            <p className="mt-1 text-[10px] uppercase tracking-widest text-neutral-400">Authorised signature</p>
+   308→          </div>
+   309→        )}
+   310→      </div>
+   311→      <div className="mt-8 border-t border-neutral-200 pt-2 text-center text-[10.5px] text-neutral-400">
+   312→        {settings['company.name']} · generated by DoliNext
+   313→      </div>
+   314→    </div>
+   315→  )
+   316→}
+   317→
+   318→// ---------------------------------------------------------------------------
+   319→// Placeholder value maps
+   320→// ---------------------------------------------------------------------------
+   321→function buildInvoiceValues(d: InvoicePrintData, s: SettingsMap, docType: string): Record<string, string> {
+   322→  const paid = d.paidAmount ?? 0
+   323→  const due = Math.max(0, Math.round((d.total - paid) * 100) / 100)
+   324→  return {
+   325→    'company.name': s['company.name'] ?? '',
+   326→    'company.legalName': s['company.legalName'] ?? '',
+   327→    'company.address': companyAddressLine(s),
+   328→    'company.phone': s['company.phone'] ?? '',
+   329→    'company.email': s['company.email'] ?? '',
+   330→    'company.website': s['company.website'] ?? '',
+   331→    'company.taxId': s['company.taxId'] ?? '',
+   332→    'company.bankDetails': s['company.bankDetails'] ?? '',
+   333→    'doc.type': docType,
+   334→    'doc.ref': d.ref,
+   335→    'doc.date': formatDate(d.date),
+   336→    'doc.dueDate': d.dueDate ? formatDate(d.dueDate) : '',
+   337→    'doc.status': STATUS_LABELS[d.status] ?? d.status,
+   338→    'doc.subtotal': formatMoney(d.subtotal),
+   339→    'doc.discountTotal': formatMoney(d.discountTotal),
+   340→    'doc.vatTotal': formatMoney(d.vatTotal),
+   341→    'doc.total': formatMoney(d.total),
+   342→    'doc.paidAmount': formatMoney(paid),
+   343→    'doc.dueAmount': formatMoney(due),
+   344→    'doc.notes': d.notes ?? '',
+   345→    'customer.name': d.thirdParty.name,
+   346→    'customer.code': d.thirdParty.code,
+   347→    'customer.address': customerAddressLine(d.thirdParty),
+   348→    'customer.email': d.thirdParty.email ?? '',
+   349→    'customer.phone': d.thirdParty.phone ?? '',
+   350→    'customer.taxId': d.thirdParty.taxId ?? '',
+   351→  }
+   352→}
+   353→
+   354→function buildReceiptValues(d: ReceiptPrintData, s: SettingsMap): Record<string, string> {
+   355→  const remaining = Math.max(0, Math.round((d.invoice.total - d.invoice.paidAmount) * 100) / 100)
+   356→  return {
+   357→    'company.name': s['company.name'] ?? '',
+   358→    'company.legalName': s['company.legalName'] ?? '',
+   359→    'company.address': companyAddressLine(s),
+   360→    'company.phone': s['company.phone'] ?? '',
+   361→    'company.email': s['company.email'] ?? '',
+   362→    'company.website': s['company.website'] ?? '',
+   363→    'company.taxId': s['company.taxId'] ?? '',
+   364→    'company.bankDetails': s['company.bankDetails'] ?? '',
+   365→    'doc.type': DOC_TYPE_LABELS['RECEIPT'] ?? 'Payment receipt',
+   366→    'doc.ref': d.invoice.ref,
+   367→    'doc.date': formatDate(d.date),
+   368→    'doc.dueDate': '',
+   369→    'doc.status':
+   370→      remaining <= 0.001 ? (STATUS_LABELS.PAID ?? 'Paid') : (STATUS_LABELS.PARTIAL ?? 'Partially paid'),
+   371→    'doc.total': formatMoney(d.invoice.total),
+   372→    'doc.paidAmount': formatMoney(d.invoice.paidAmount),
+   373→    'doc.dueAmount': formatMoney(remaining),
+   374→    'customer.name': d.customer.name,
+   375→    'customer.code': d.customer.code,
+   376→    'customer.address': customerAddressLine(d.customer),
+   377→    'customer.email': d.customer.email ?? '',
+   378→    'customer.phone': d.customer.phone ?? '',
+   379→    'customer.taxId': d.customer.taxId ?? '',
+   380→    'payment.amount': formatMoney(d.amount),
+   381→    'payment.method': PAYMENT_METHOD_LABELS[d.method] ?? d.method,
+   382→    'payment.date': formatDate(d.date),
+   383→    'payment.reference': d.reference ?? d.paymentRef ?? '',
+   384→    'payment.invoiceRef': d.invoice.ref,
+   385→    'payment.remaining': formatMoney(remaining),
+   386→  }
+   387→}
+   388→
+   389→// ---------------------------------------------------------------------------
+   390→// Line-document view (invoice / proposal / order / supplier invoice)
+   391→// ---------------------------------------------------------------------------
+   392→function LineDocView({
+   393→  data,
+   394→  config,
+   395→  settings,
+   396→  docType,
+   397→  dueLabel,
+   398→  billToLabel = 'Bill to',
+   399→}: {
+   400→  data: InvoicePrintData
+   401→  config: TemplateConfig
+   402→  settings: SettingsMap
+   403→  docType: string
+   404→  dueLabel: string
+   405→  billToLabel?: string
+   406→}) {
+   407→  const accent = config.accentColor
+   408→  const f = config.fields
+   409→  const colCount =
+   410→    1 + // #
+   411→    (f.showDescription ? 1 : 0) +
+   412→    (f.showQty ? 1 : 0) +
+   413→    (f.showUnitPrice ? 1 : 0) +
+   414→    (f.showDiscount ? 1 : 0) +
+   415→    (f.showVat ? 1 : 0) +
+   416→    1 // Amount
+   417→  const values = useMemo(() => buildInvoiceValues(data, settings, docType), [data, settings, docType])
+   418→  const title = resolvePlaceholders(config.titlePattern, values)
+   419→  const headerNote = config.headerNote ? resolvePlaceholders(config.headerNote, values) : ''
+   420→  const footerNote = config.footerNote ? resolvePlaceholders(config.footerNote, values) : ''
+   421→
+   422→  return (
+   423→    <div className="relative bg-white">
+   424→      {/* Header */}
+   425→      <div className="flex flex-wrap items-start justify-between gap-4">
+   426→        <CompanyBlock config={config} settings={settings} />
+   427→        <div className="flex flex-col items-end gap-2">
+   428→          <h1 className="text-right text-2xl font-extrabold leading-tight" style={{ color: accent }}>
+   429→            {title}
+   430→          </h1>
+   431→          <MetaBox
+   432→            rows={[
+   433→              { label: 'Status', value: STATUS_LABELS[data.status] ?? data.status },
+   434→              { label: 'Date', value: formatDate(data.date) },
+   435→              { label: data.dueDate ? dueLabel : '', value: data.dueDate ? formatDate(data.dueDate) : '' },
+   436→              { label: 'Linked doc', value: data.linkedRef ?? '' },
+   437→              { label: 'Reference', value: data.linkedRef ? data.ref : '' },
+   438→            ]}
+   439→          />
+   440→        </div>
+   441→      </div>
+   442→
+   443→      {headerNote ? <p className="mt-3 text-[12px] italic text-neutral-500">{headerNote}</p> : null}
+   444→
+   445→      <BillToCard tp={data.thirdParty} accentColor={accent} label={billToLabel} />
+   446→
+   447→      {/* Lines table */}
+   448→      <table className="w-full border-collapse text-[12.5px]">
+   449→        <thead>
+   450→          <tr className="bg-neutral-100 text-left">
+   451→            <th className="border border-neutral-200 px-2.5 py-1.5 font-semibold">#</th>
+   452→            {f.showDescription && (
+   453→              <th className="border border-neutral-200 px-2.5 py-1.5 font-semibold">Description</th>
+   454→            )}
+   455→            {f.showQty && <th className="border border-neutral-200 px-2.5 py-1.5 text-right font-semibold">Qty</th>}
+   456→            {f.showUnitPrice && (
+   457→              <th className="border border-neutral-200 px-2.5 py-1.5 text-right font-semibold">Unit price</th>
+   458→            )}
+   459→            {f.showDiscount && (
+   460→              <th className="border border-neutral-200 px-2.5 py-1.5 text-right font-semibold">Discount %</th>
+   461→            )}
+   462→            {f.showVat && (
+   463→              <th className="border border-neutral-200 px-2.5 py-1.5 text-right font-semibold">VAT %</th>
+   464→            )}
+   465→            <th className="border border-neutral-200 px-2.5 py-1.5 text-right font-semibold">Amount</th>
+   466→          </tr>
+   467→        </thead>
+   468→        <tbody>
+   469→          {data.lines.length === 0 ? (
+   470→            <tr>
+   471→              <td
+   472→                colSpan={colCount}
+   473→                className="border border-neutral-200 px-2.5 py-3 text-center text-[11.5px] italic text-neutral-400"
+   474→              >
+   475→                No line items — totals entered directly
+   476→              </td>
+   477→            </tr>
+   478→          ) : (
+   479→            data.lines.map((l, i) => (
+   480→            <tr key={`${l.label}-${i}`} className={i % 2 === 1 ? 'bg-neutral-50' : undefined}>
+   481→              <td className="border border-neutral-200 px-2.5 py-1.5 text-neutral-500">{i + 1}</td>
+   482→              {f.showDescription && (
+   483→                <td className="border border-neutral-200 px-2.5 py-1.5">
+   484→                  <span className="block font-semibold">{l.label}</span>
+   485→                  {l.description ? <span className="block text-[11px] text-neutral-500">{l.description}</span> : null}
+   486→                </td>
+   487→              )}
+   488→              {f.showQty && (
+   489→                <td className="border border-neutral-200 px-2.5 py-1.5 text-right tabular-nums">{l.qty}</td>
+   490→              )}
+   491→              {f.showUnitPrice && (
+   492→                <td className="border border-neutral-200 px-2.5 py-1.5 text-right tabular-nums">
+   493→                  {formatMoney(l.unitPrice)}
+   494→                </td>
+   495→              )}
+   496→              {f.showDiscount && (
+   497→                <td className="border border-neutral-200 px-2.5 py-1.5 text-right tabular-nums">{l.discountPct}</td>
+   498→              )}
+   499→              {f.showVat && (
+   500→                <td className="border border-neutral-200 px-2.5 py-1.5 text-right tabular-nums">{l.vatRate}%</td>
+   501→              )}
+   502→              <td className="border border-neutral-200 px-2.5 py-1.5 text-right font-medium tabular-nums">
+   503→                {formatMoney(computeLineTotal(l))}
+   504→              </td>
+   505→            </tr>
+   506→            ))
+   507→          )}
+   508→        </tbody>
+   509→      </table>
+   510→
+   511→      {/* Totals */}
+   512→      <div className="ml-auto mt-4 w-64 space-y-1 text-[13px]">
+   513→        <div className="flex justify-between">
+   514→          <span className="text-neutral-500">Subtotal</span>
+   515→          <span className="tabular-nums">{formatMoney(data.subtotal)}</span>
+   516→        </div>
+   517→        {f.showDiscount && data.discountTotal > 0 && (
+   518→          <div className="flex justify-between">
+   519→            <span className="text-neutral-500">Discount</span>
+   520→            <span className="tabular-nums">−{formatMoney(data.discountTotal)}</span>
+   521→          </div>
+   522→        )}
+   523→        {f.showVat && (
+   524→          <div className="flex justify-between">
+   525→            <span className="text-neutral-500">VAT total</span>
+   526→            <span className="tabular-nums">{formatMoney(data.vatTotal)}</span>
+   527→          </div>
+   528→        )}
+   529→        <div className="flex justify-between border-t border-neutral-300 pt-1.5">
+   530→          <span className="font-bold">TOTAL</span>
+   531→          <span className="text-lg font-extrabold tabular-nums" style={{ color: accent }}>
+   532→            {formatMoney(data.total)}
+   533→          </span>
+   534→        </div>
+   535→        {data.paidAmount !== undefined && (
+   536→          <div className="flex justify-between">
+   537→            <span className="text-neutral-500">Amount paid</span>
+   538→            <span className="tabular-nums">{formatMoney(data.paidAmount)}</span>
+   539→          </div>
+   540→        )}
+   541→        {data.paidAmount !== undefined && (
+   542→          <div className="flex justify-between font-bold">
+   543→            <span>Amount due</span>
+   544→            <span className="tabular-nums">{formatMoney(Math.max(0, data.total - data.paidAmount))}</span>
+   545→          </div>
+   546→        )}
+   547→      </div>
+   548→
+   549→      {/* Notes */}
+   550→      {f.showNotes && data.notes ? (
+   551→        <p
+   552→          className="mt-5 border-l-2 pl-3 text-[12px] italic text-neutral-600"
+   553→          style={{ borderColor: accent }}
+   554→        >
+   555→          {data.notes}
+   556→        </p>
+   557→      ) : null}
+   558→
+   559→      <DocFooter config={config} settings={settings} footerNote={footerNote} />
+   560→    </div>
+   561→  )
+   562→}
+   563→
+   564→// ---------------------------------------------------------------------------
+   565→// Receipt view
+   566→// ---------------------------------------------------------------------------
+   567→function ReceiptView({
+   568→  data,
+   569→  config,
+   570→  settings,
+   571→}: {
+   572→  data: ReceiptPrintData
+   573→  config: TemplateConfig
+   574→  settings: SettingsMap
+   575→}) {
+   576→  const accent = config.accentColor
+   577→  const remaining = Math.max(0, Math.round((data.invoice.total - data.invoice.paidAmount) * 100) / 100)
+   578→  const fullyPaid = remaining <= 0.001
+   579→  const values = useMemo(() => buildReceiptValues(data, settings), [data, settings])
+   580→  const title = resolvePlaceholders(config.titlePattern, values)
+   581→  const headerNote = config.headerNote ? resolvePlaceholders(config.headerNote, values) : ''
+   582→  const footerNote = config.footerNote ? resolvePlaceholders(config.footerNote, values) : ''
+   583→
+   584→  const detailRows = [
+   585→    { label: 'Payment method', value: PAYMENT_METHOD_LABELS[data.method] ?? data.method },
+   586→    { label: 'Payment date', value: formatDate(data.date) },
+   587→    { label: 'Reference', value: data.reference ?? data.paymentRef ?? '—' },
+   588→    { label: 'For invoice', value: data.invoice.ref },
+   589→  ]
+   590→
+   591→  return (
+   592→    <div className="relative bg-white">
+   593→      {/* Header */}
+   594→      <div className="flex flex-wrap items-start justify-between gap-4">
+   595→        <CompanyBlock config={config} settings={settings} />
+   596→        <div className="flex flex-col items-end gap-2">
+   597→          <h1 className="text-right text-2xl font-extrabold leading-tight" style={{ color: accent }}>
+   598→            {title}
+   599→          </h1>
+   600→          <MetaBox
+   601→            rows={[
+   602→              { label: 'Invoice', value: data.invoice.ref },
+   603→              { label: 'Invoice total', value: formatMoney(data.invoice.total) },
+   604→              { label: 'Status', value: fullyPaid ? (STATUS_LABELS.PAID ?? 'Paid') : (STATUS_LABELS.PARTIAL ?? 'Partially paid') },
+   605→            ]}
+   606→          />
+   607→        </div>
+   608→      </div>
+   609→
+   610→      {headerNote ? <p className="mt-3 text-[12px] italic text-neutral-500">{headerNote}</p> : null}
+   611→
+   612→      <BillToCard tp={data.customer} accentColor={accent} />
+   613→
+   614→      {/* Receipt panel */}
+   615→      <div className="relative my-6 rounded-lg border border-neutral-300 px-6 py-8 text-center">
+   616→        {config.fields.showPaidBadge && fullyPaid && <PaidStamp accentColor={accent} />}
+   617→        <p className="text-[10px] font-semibold uppercase tracking-widest text-neutral-500">Amount received</p>
+   618→        <p className="mt-1 text-4xl font-extrabold tabular-nums" style={{ color: accent }}>
+   619→          {formatMoney(data.amount)}
+   620→        </p>
+   621→        <p className="mt-4 text-[13px]">
+   622→          Received from <span className="font-bold">{data.customer.name}</span>{' '}
+   623→          <span className="text-neutral-400">({data.customer.code})</span>
+   624→        </p>
+   625→        <div className="mx-auto mt-4 max-w-xs space-y-1 text-[12.5px]">
+   626→          {detailRows.map((r) => (
+   627→            <div key={r.label} className="flex justify-between gap-6">
+   628→              <span className="text-neutral-500">{r.label}</span>
+   629→              <span className="font-medium">{r.value}</span>
+   630→            </div>
+   631→          ))}
+   632→        </div>
+   633→        <p className="mt-4 text-[12.5px]">
+   634→          Remaining balance on {data.invoice.ref}:{' '}
+   635→          <span className={fullyPaid ? 'font-bold text-emerald-700' : 'font-bold text-amber-700'}>
+   636→            {formatMoney(remaining)}
+   637→          </span>
+   638→        </p>
+   639→      </div>
+   640→
+   641→      <DocFooter config={config} settings={settings} footerNote={footerNote} />
+   642→    </div>
+   643→  )
+   644→}
+   645→
+   646→// ---------------------------------------------------------------------------
+   647→// DocumentPrintDialog
+   648→// ---------------------------------------------------------------------------
+   649→const DUE_LABELS: Partial<Record<DocKind, string>> = {
+   650→  INVOICE: 'Due date',
+   651→  SUPPLIER_INVOICE: 'Due date',
+   652→  PROPOSAL: 'Valid until',
+   653→  ORDER: 'Delivery date',
+   654→}
+   655→
+   656→export function DocumentPrintDialog({
+   657→  open,
+   658→  onOpenChange,
+   659→  kind,
+   660→  data,
+   661→}: {
+   662→  open: boolean
+   663→  onOpenChange: (open: boolean) => void
+   664→  kind: DocKind
+   665→  data: InvoicePrintData | ReceiptPrintData
+   666→}) {
+   667→  const { settings, load } = useSettingsStore()
+   668→
+   669→  useEffect(() => {
+   670→    if (open) void load()
+   671→  }, [open, load])
+   672→
+   673→  const templateQ = useDocTemplate(kind, open)
+   674→  const config = templateQ.data?.config ?? DEFAULT_TEMPLATE_CONFIG
+   675→  const templateName = templateQ.data?.name ?? 'Default template'
+   676→  const printNow = usePrintNow(config.paperSize)
+   677→
+   678→  const isReceipt = kind === 'RECEIPT'
+   679→
+   680→  return (
+   681→    <Dialog open={open} onOpenChange={onOpenChange}>
+   682→      <DialogContent className="max-w-4xl">
+   683→        <DialogHeader className="no-print">
+   684→          <DialogTitle className="sr-only">Document preview</DialogTitle>
+   685→          <DialogDescription className="sr-only">
+   686→            Branded {DOC_TYPE_LABELS[kind] ?? kind} preview — print it or save it as PDF.
+   687→          </DialogDescription>
+   688→        </DialogHeader>
+   689→
+   690→        {/* Toolbar */}
+   691→        <div className="no-print flex flex-wrap items-center justify-between gap-2">
+   692→          <div className="flex items-center gap-2">
+   693→            {templateQ.isLoading ? (
+   694→              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+   695→            ) : (
+   696→              <Badge variant="secondary">{templateName}</Badge>
+   697→            )}
+   698→            <span className="text-xs text-muted-foreground">
+   699→              {config.paperSize === 'LETTER' ? 'Letter 8.5×11"' : 'A4 210×297mm'} · Save as PDF ready
+   700→            </span>
+   701→          </div>
+   702→          <div className="flex items-center gap-2">
+   703→            <Button size="sm" onClick={printNow} disabled={templateQ.isLoading}>
+   704→              <Printer className="h-4 w-4" /> Print / Save PDF
+   705→            </Button>
+   706→            <Button size="sm" variant="outline" onClick={() => onOpenChange(false)}>
+   707→              <X className="h-4 w-4" /> Close
+   708→            </Button>
+   709→          </div>
+   710→        </div>
+   711→
+   712→        {/* Preview */}
+   713→        <div className="max-h-[70vh] overflow-y-auto rounded-md bg-neutral-100 p-4">
+   714→          <div
+   715→            className="print-area mx-auto border bg-white text-neutral-900 shadow-md"
+   716→            style={printAreaStyle(config.paperSize)}
+   717→          >
+   718→            {isReceipt && 'invoice' in data ? (
+   719→              <ReceiptView data={data} config={config} settings={settings} />
+   720→            ) : !isReceipt && 'lines' in data ? (
+   721→              <LineDocView
+   722→                data={data}
+   723→                config={config}
+   724→                settings={settings}
+   725→                docType={DOC_TYPE_LABELS[kind] ?? kind}
+   726→                dueLabel={DUE_LABELS[kind] ?? 'Due date'}
+   727→                billToLabel={kind === 'SUPPLIER_INVOICE' ? 'Supplier' : 'Bill to'}
+   728→              />
+   729→            ) : null}
+   730→          </div>
+   731→        </div>
+   732→      </DialogContent>
+   733→    </Dialog>
+   734→  )
+   735→}
+   736→

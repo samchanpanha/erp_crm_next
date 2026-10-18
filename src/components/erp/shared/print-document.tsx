@@ -12,11 +12,12 @@
  * plus dialog-flattening rules so the .print-area lands at the top-left of the
  * printed page.
  */
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Printer, X } from 'lucide-react'
+import { FileDown, Loader2, Printer, X } from 'lucide-react'
 
 import { get } from '../lib/api'
+import { authHeaders } from '../lib/session-token'
 import { computeLineTotal } from '@/lib/doc-math'
 import {
   DEFAULT_TEMPLATE_CONFIG,
@@ -43,6 +44,7 @@ import {
 // Public data shapes
 // ---------------------------------------------------------------------------
 export interface InvoicePrintData {
+  id?: string
   ref: string
   date: string
   dueDate: string | null
@@ -76,6 +78,7 @@ export interface InvoicePrintData {
 }
 
 export interface ReceiptPrintData {
+  id?: string
   paymentRef?: string
   amount: number
   method: string
@@ -653,6 +656,49 @@ const DUE_LABELS: Partial<Record<DocKind, string>> = {
   ORDER: 'Delivery date',
 }
 
+function DocumentPdfButton({ kind, docId, fileName }: { kind: DocKind; docId?: string; fileName: string }) {
+  const [downloading, setDownloading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  if (!docId) return null
+
+  async function download() {
+    if (downloading) return
+    setDownloading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/documents/${kind}/${docId}/pdf`, { headers: authHeaders() })
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(json.error ?? `PDF failed (${res.status})`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'PDF download failed')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return (
+    <>
+      {error ? <span className="text-xs text-rose-600" role="alert">{error}</span> : null}
+      <Button size="sm" variant="outline" onClick={() => void download()} disabled={downloading} aria-busy={downloading}>
+        {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
+        Download PDF
+      </Button>
+    </>
+  )
+}
+
 export function DocumentPrintDialog({
   open,
   onOpenChange,
@@ -700,6 +746,17 @@ export function DocumentPrintDialog({
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <DocumentPdfButton
+              kind={kind}
+              docId={data.id}
+              fileName={
+                kind === 'RECEIPT' && 'invoice' in data
+                  ? `receipt-${data.invoice.ref}.pdf`
+                  : 'ref' in data
+                    ? `${kind.toLowerCase()}-${data.ref}.pdf`
+                    : 'document.pdf'
+              }
+            />
             <Button size="sm" onClick={printNow} disabled={templateQ.isLoading}>
               <Printer className="h-4 w-4" /> Print / Save PDF
             </Button>

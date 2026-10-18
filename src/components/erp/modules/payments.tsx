@@ -153,6 +153,7 @@ function buildReceiptData(p: PaymentRow): ReceiptPrintData | null {
   if (!doc) return null
   const tp = doc.thirdParty
   return {
+    id: p.id,
     paymentRef: p.reference ?? undefined,
     amount: p.amount,
     method: p.method,

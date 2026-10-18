@@ -170,6 +170,7 @@ const toEditorLines = (lines: DocLine[] | undefined): EditorLine[] =>
 /** Map a loaded ProposalDetail onto the printable-document shape (dueDate ← validUntil). */
 function buildPrintData(d: ProposalDetail, linkedRef?: string): InvoicePrintData {
   return {
+    id: d.id,
     ref: d.ref,
     date: d.date,
     dueDate: d.validUntil,

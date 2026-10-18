@@ -167,6 +167,7 @@ const remainingOf = (i: { total: number; paidAmount: number }) => round2(i.total
 /** Map a loaded InvoiceDetail onto the printable-document shape. */
 function buildPrintData(d: InvoiceDetail): InvoicePrintData {
   return {
+    id: d.id,
     ref: d.ref,
     date: d.date,
     dueDate: d.dueDate,

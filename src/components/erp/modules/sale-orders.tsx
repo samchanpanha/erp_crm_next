@@ -161,6 +161,7 @@ const toEditorLines = (lines: DocLine[] | undefined): EditorLine[] =>
 /** Map a loaded SaleOrderDetail onto the printable-document shape (dueDate ← deliveryDate). */
 function buildPrintData(d: SaleOrderDetail): InvoicePrintData {
   return {
+    id: d.id,
     ref: d.ref,
     date: d.date,
     dueDate: d.deliveryDate,
